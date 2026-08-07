@@ -4,21 +4,25 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from trivy_ai_report.models import AnalysisOutcome
-from trivy_ai_report.providers import GEMINI_DEFAULT_MODEL, ProviderError, create_analyzer
-from trivy_ai_report.renderer import OutputExistsError, write_html_report
-from trivy_ai_report.rules import merge_recommendations
-from trivy_ai_report.skills import SkillError, load_skill
-from trivy_ai_report.trivy import TrivyReportError, load_trivy_report
+from agent_core.pipeline import AgentPipeline
+from agent_core.providers import GEMINI_DEFAULT_MODEL, create_analyzer
+from agent_core.skills import SkillError, load_skill
+from agent_core.web import create_app
+from trivy_ai_report.plugin import TrivyDomainAdapter
+from trivy_ai_report.renderer import OutputExistsError
+from trivy_ai_report.trivy import TrivyReportError
 
 EXIT_OK = 0
 EXIT_INTERNAL_ERROR = 1
 EXIT_INPUT_ERROR = 2
 EXIT_DEGRADED = 3
+
+app = create_app([TrivyDomainAdapter()])
 
 
 def positive_seconds(value: str) -> float:
@@ -116,8 +120,12 @@ async def run(args: argparse.Namespace) -> int:
 
     try:
         _check_output_path(args.output, force=args.force)
-        report = load_trivy_report(args.input)
-    except (TrivyReportError, OutputExistsError, OSError) as exc:
+        raw_text = args.input.read_text(encoding="utf-8")
+        input_data = json.loads(raw_text)
+    except OutputExistsError as exc:
+        print(f"输出错误：{exc}", file=sys.stderr)
+        return EXIT_INPUT_ERROR
+    except (json.JSONDecodeError, OSError) as exc:
         print(f"输入错误：{exc}", file=sys.stderr)
         return EXIT_INPUT_ERROR
 
@@ -126,75 +134,44 @@ async def run(args: argparse.Namespace) -> int:
     except (SkillError, OSError) as exc:
         print(f"Skill 输入错误：{exc}", file=sys.stderr)
         return EXIT_INPUT_ERROR
-    skill_name = skill.name if skill is not None else None
 
-    if not report.findings:
-        outcome = AnalysisOutcome(
-            provider=args.provider,
-            model=_reported_model(args.provider, args.model),
-            skill_name=skill_name,
-            enrich_web=args.enrich_web,
-            recommendations=[],
-        )
-        try:
-            write_html_report(report, outcome, args.output, force=args.force)
-        except (OutputExistsError, OSError) as exc:
-            print(f"输出错误：{exc}", file=sys.stderr)
-            return EXIT_INPUT_ERROR
-        print(f"报告已生成（未发现漏洞）：{args.output}")
-        return EXIT_OK
+    adapter = TrivyDomainAdapter()
+    pipeline = AgentPipeline(
+        adapter=adapter,
+        analyzer_factory=create_analyzer,
+        skill_loader=load_skill,
+    )
 
-    provider_failed = False
-    failure_reason: str | None = None
     try:
-        analyzer = create_analyzer(
-            args.provider,
+        result = await pipeline.run(
+            provider=args.provider,
+            input_data=input_data,
             model=args.model,
-            enrich_web=args.enrich_web,
-            batch_size=10 if args.enrich_web else 25,
             skill=skill,
-        )
-        outcome = await analyzer.analyze(
-            report.findings,
+            enrich_web=args.enrich_web,
             timeout_seconds=args.timeout_seconds,
         )
-        outcome = outcome.model_copy(update={"skill_name": skill_name})
-    except ProviderError as exc:
-        provider_failed = True
-        failure_reason = str(exc)
-        outcome = AnalysisOutcome(
-            provider=args.provider,
-            model=_reported_model(args.provider, args.model),
-            skill_name=skill_name,
-            enrich_web=args.enrich_web,
-            partial=True,
-            warnings=[f"Agent 分析失败：{failure_reason}"],
-        )
-
-    merged, validation_warnings, validation_partial = merge_recommendations(
-        report.findings,
-        outcome.recommendations,
-        failure_reason=failure_reason,
-    )
-    outcome = outcome.model_copy(
-        update={
-            "recommendations": merged,
-            "warnings": [*outcome.warnings, *validation_warnings],
-            "partial": outcome.partial or validation_partial or provider_failed,
-        }
-    )
+    except (TrivyReportError, ValueError) as exc:
+        print(f"输入错误：{exc}", file=sys.stderr)
+        return EXIT_INPUT_ERROR
 
     try:
-        write_html_report(report, outcome, args.output, force=args.force)
+        _check_output_path(args.output, force=args.force)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(result.content, encoding="utf-8")
     except (OutputExistsError, OSError) as exc:
         print(f"输出错误：{exc}", file=sys.stderr)
         return EXIT_INPUT_ERROR
 
-    if outcome.partial:
+    if result.partial or result.outcome.partial:
         print(f"报告已降级生成：{args.output}", file=sys.stderr)
-        for warning in outcome.warnings:
+        for warning in result.outcome.warnings:
             print(f"警告：{warning}", file=sys.stderr)
         return EXIT_DEGRADED
+
+    if adapter.is_empty:
+        print(f"报告已生成（未发现漏洞）：{args.output}")
+        return EXIT_OK
 
     print(f"报告已生成：{args.output}")
     return EXIT_OK

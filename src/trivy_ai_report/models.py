@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from agent_core.models.contracts import BaseFact
 
 
 class RecommendationCategory(str, Enum):
@@ -52,12 +54,22 @@ class Evidence(BaseModel):
         return value
 
 
-class Finding(BaseModel):
+class Finding(BaseFact):
     """An immutable vulnerability fact normalized from Trivy JSON v2."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="allow", frozen=True)
 
     finding_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_fact_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "finding_id" in data and not data.get("fact_id"):
+                data["fact_id"] = data["finding_id"]
+            if not data.get("summary"):
+                data["summary"] = data.get("title") or data.get("vulnerability_id") or ""
+        return data
     artifact_name: str
     artifact_type: str
     target: str

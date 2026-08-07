@@ -10,8 +10,8 @@ class BaseFact(BaseModel):
     """Domain fact extracted from input data, immutable by default."""
 
     model_config = ConfigDict(extra="allow", frozen=True)
-    fact_id: str
-    summary: str
+    fact_id: str = ""
+    summary: str = ""
 
 
 class BaseAdvice(BaseModel):
