@@ -1,10 +1,6 @@
-"""Lazy, provider-neutral adapters for Codex, Claude, and Google ADK.
+"""Provider Adapters (Codex, Claude, Gemini)."""
 
-(Re-exported from agent_core for backward compatibility).
-"""
-
-import agent_core.providers.base as _base
-from agent_core.providers import (
+from agent_core.providers.base import (
     GEMINI_DEFAULT_MODEL,
     RETRY_BACKOFF_SECONDS,
     Analyzer,
@@ -20,10 +16,6 @@ from agent_core.providers import (
     ProviderUnavailableError,
     create_analyzer,
 )
-
-# Re-export module-level symbols that unit tests may monkeypatch or access
-asyncio = _base.asyncio
-import_module = _base.import_module
 
 __all__ = [
     "Analyzer",

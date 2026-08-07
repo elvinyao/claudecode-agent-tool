@@ -6,17 +6,8 @@ from typing import Any
 
 import pytest
 
-import trivy_ai_report.providers as providers
-from trivy_ai_report.models import (
-    Evidence,
-    Finding,
-    Recommendation,
-    RecommendationBatch,
-    RecommendationCategory,
-    ResearchStatus,
-)
-from trivy_ai_report.prompts import build_analysis_prompt, finding_payload
-from trivy_ai_report.providers import (
+import agent_core.providers.base as providers
+from agent_core.providers import (
     BaseAnalyzer,
     ClaudeAnalyzer,
     CodexAnalyzer,
@@ -28,7 +19,16 @@ from trivy_ai_report.providers import (
     ProviderUnavailableError,
     create_analyzer,
 )
-from trivy_ai_report.skills import load_skill
+from agent_core.skills import load_skill
+from trivy_ai_report.models import (
+    Evidence,
+    Finding,
+    Recommendation,
+    RecommendationBatch,
+    RecommendationCategory,
+    ResearchStatus,
+)
+from trivy_ai_report.prompts import build_analysis_prompt, finding_payload
 
 
 def finding(index: int, **updates: Any) -> Finding:
