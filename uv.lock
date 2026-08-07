@@ -2146,8 +2146,11 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "claude-agent-sdk" },
+    { name = "fastapi" },
     { name = "google-adk" },
+    { name = "httpx" },
     { name = "openai-codex" },
+    { name = "uvicorn" },
 ]
 claude = [
     { name = "claude-agent-sdk" },
@@ -2157,6 +2160,11 @@ codex = [
 ]
 gemini = [
     { name = "google-adk" },
+]
+web = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -2171,14 +2179,20 @@ dev = [
 requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'all'", specifier = ">=0.2.130,<1" },
     { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.2.130,<1" },
+    { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.110" },
+    { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.110" },
     { name = "google-adk", marker = "extra == 'all'", specifier = ">=2.6,<3" },
     { name = "google-adk", marker = "extra == 'gemini'", specifier = ">=2.6,<3" },
+    { name = "httpx", marker = "extra == 'all'", specifier = ">=0.27" },
+    { name = "httpx", marker = "extra == 'web'", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1,<4" },
     { name = "openai-codex", marker = "extra == 'all'", specifier = ">=0.144.4" },
     { name = "openai-codex", marker = "extra == 'codex'", specifier = ">=0.144.4" },
     { name = "pydantic", specifier = ">=2.10,<3" },
+    { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.28" },
+    { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.28" },
 ]
-provides-extras = ["codex", "claude", "gemini", "all"]
+provides-extras = ["codex", "claude", "gemini", "web", "all"]
 
 [package.metadata.requires-dev]
 dev = [
