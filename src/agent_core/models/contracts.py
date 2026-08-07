@@ -7,12 +7,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class BaseFact(BaseModel):
+    """Domain fact extracted from input data, immutable by default."""
+
     model_config = ConfigDict(extra="allow", frozen=True)
     fact_id: str
     summary: str
 
 
 class BaseAdvice(BaseModel):
+    """Actionable recommendation mapped to a specific fact."""
+
     model_config = ConfigDict(extra="allow")
     fact_id: str
     title_zh: str
@@ -20,6 +24,8 @@ class BaseAdvice(BaseModel):
 
 
 class AnalysisOutcome(BaseModel):
+    """Outcome payload containing metadata, recommendations, and execution warnings."""
+
     model_config = ConfigDict(extra="allow")
     provider: str
     model: str = "provider-default"
@@ -29,3 +35,4 @@ class AnalysisOutcome(BaseModel):
     recommendations: list[Any] = Field(default_factory=list)
     partial: bool = False
     warnings: list[str] = Field(default_factory=list)
+

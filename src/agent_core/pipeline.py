@@ -8,25 +8,37 @@ from agent_core.models.contracts import AnalysisOutcome, BaseFact
 
 
 class DomainAdapter(ABC):
+    """Abstract base class for domain parsing, prompt building, validation, and rendering."""
+
     name: str
 
     @abstractmethod
-    def parse_input(self, raw_data: dict[str, Any]) -> list[BaseFact]: ...
+    def parse_input(self, raw_data: dict[str, Any]) -> list[BaseFact]:
+        """Parse raw input data into domain-specific facts."""
+        ...
 
     @abstractmethod
-    def build_prompt(self, facts: list[BaseFact], enrich_web: bool) -> str: ...
+    def build_prompt(self, facts: list[BaseFact], enrich_web: bool) -> str:
+        """Build analysis prompt from extracted facts and web enrichment option."""
+        ...
 
     @abstractmethod
     def validate_and_merge(
         self, facts: list[BaseFact], raw_advices: list[Any], failure_reason: str | None
-    ) -> tuple[list[Any], list[str], bool]: ...
+    ) -> tuple[list[Any], list[str], bool]:
+        """Validate raw model advice output against facts and merge results."""
+        ...
 
     @abstractmethod
-    def render_output(self, facts: list[BaseFact], outcome: AnalysisOutcome) -> str: ...
+    def render_output(self, facts: list[BaseFact], outcome: AnalysisOutcome) -> str:
+        """Render final formatted report string from facts and analysis outcome."""
+        ...
 
 
 @dataclass(slots=True)
 class PipelineResult:
+    """Result container for agent pipeline execution."""
+
     success: bool
     content: str
     outcome: AnalysisOutcome
@@ -35,6 +47,8 @@ class PipelineResult:
 
 
 class AgentPipeline:
+    """Orchestrates input parsing, prompt construction, model analysis, and output rendering."""
+
     def __init__(self, adapter: DomainAdapter):
         self.adapter = adapter
 
@@ -47,18 +61,26 @@ class AgentPipeline:
         enrich_web: bool = False,
         timeout_seconds: float = 300.0,
     ) -> PipelineResult:
+        """Execute the agent pipeline with given provider settings and input data."""
         facts = self.adapter.parse_input(input_data)
         if not facts:
             outcome = AnalysisOutcome(
                 provider=provider,
                 model=model or "provider-default",
+                skill_name=skill_path,
                 enrich_web=enrich_web,
             )
             content = self.adapter.render_output([], outcome)
             return PipelineResult(success=True, content=content, outcome=outcome)
 
+        prompt = self.adapter.build_prompt(facts, enrich_web=enrich_web)  # noqa: F841
         # Mock / Provider execution boundary
-        outcome = AnalysisOutcome(provider=provider, model=model or "default")
+        outcome = AnalysisOutcome(
+            provider=provider,
+            model=model or "provider-default",
+            skill_name=skill_path,
+            enrich_web=enrich_web,
+        )
         merged, warnings, partial = self.adapter.validate_and_merge(facts, [], None)
         outcome.recommendations = merged
         outcome.warnings = warnings
