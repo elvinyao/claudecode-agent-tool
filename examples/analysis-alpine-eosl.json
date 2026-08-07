@@ -1,0 +1,33 @@
+{
+  "provider": "claude",
+  "model": "offline-fixture",
+  "skill_name": "trivy-remediation",
+  "enrich_web": false,
+  "generated_at": "2026-08-05T00:00:00Z",
+  "recommendations": [
+    {
+      "finding_id": "4fd75c60e0812f0247039ca9fbbadf4433a5c63038c24670c32104588af721b8",
+      "category": "base_image_or_os_upgrade",
+      "title_zh": "迁移出 Alpine 3.10 EOSL 基础镜像，并同步修复 apk-tools",
+      "rationale_zh": "Trivy 标记 Alpine 3.10.9 已结束支持；即使单独将 apk-tools 从 2.10.6-r0 升到 FixedVersion 2.10.7-r0，也不能恢复整个 OS 的安全更新。应把基础镜像迁移到组织批准且仍受支持的 Alpine 版本，同时确认新镜像中的 apk-tools 不低于 Trivy 给出的修复版本。",
+      "actions_zh": [
+        "选择组织允许且仍受支持的 Alpine 基础镜像，并在 Dockerfile 中使用不可变 digest 固定经过测试的镜像。",
+        "在隔离分支重建应用；如暂时无法迁移，至少执行 apk upgrade --no-cache apk-tools 作为短期措施，但不要把它视为 EOSL 的完整解决方案。",
+        "检查 libc、TLS、时区与原生扩展等跨 Alpine 版本兼容性，再逐步发布新镜像。"
+      ],
+      "validation_zh": [
+        "在新容器中读取 /etc/alpine-release，并确认 Trivy Metadata.OS.EOSL 不再为 true。",
+        "重新运行 Trivy，确认 apk-tools InstalledVersion 已达到修复范围，并执行应用回归与容器启动探针测试。"
+      ],
+      "recommended_version": null,
+      "version_source": "none",
+      "confidence": "high",
+      "research_status": "not_requested",
+      "evidence": []
+    }
+  ],
+  "partial": false,
+  "warnings": [
+    "教学示例：本报告使用离线固定分析响应生成，仅展示 Skill 元数据，未实际调用 Claude Code 或 Skill，也未执行联网增强。"
+  ]
+}

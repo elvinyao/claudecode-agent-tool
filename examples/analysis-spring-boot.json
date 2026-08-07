@@ -1,0 +1,33 @@
+{
+  "provider": "codex",
+  "model": "offline-fixture",
+  "skill_name": "trivy-remediation",
+  "enrich_web": false,
+  "generated_at": "2026-08-05T00:00:00Z",
+  "recommendations": [
+    {
+      "finding_id": "ca98541f2207161c9e23fef45e7df1e764fe973c3d330d36c4d47117352447db",
+      "category": "spring_boot_or_bom_upgrade",
+      "title_zh": "将 Spring Boot 升级到同一维护线的修复版本",
+      "rationale_zh": "Trivy 将当前 Spring Boot 2.6.3 与 CVE-2022-22965 关联，并给出 2.5.12、2.6.6 两个修复版本。当前项目处于 2.6.x，因此优先升级到 2.6.6 或经团队验证的更高受支持版本，避免为修复漏洞而降级到 2.5.x。",
+      "actions_zh": [
+        "在 pom.xml 中将 Spring Boot parent 或 dependency-management BOM 从 2.6.3 更新到 2.6.6；Gradle 项目则更新 plugins 或 BOM 中对应版本。",
+        "保持 Spring Framework 依赖由 Spring Boot BOM 管理；若存在手工固定的 org.springframework 版本，移除覆盖或确认其与目标 Boot 版本兼容。",
+        "重新解析依赖并构建应用镜像，检查 Maven/Gradle dependency tree 中没有残留的旧 Spring 组件。"
+      ],
+      "validation_zh": [
+        "运行完整单元、集成和启动测试，特别验证数据绑定、Servlet 容器与 JDK 组合。",
+        "对新镜像重新运行 Trivy，确认该 finding 消失或 InstalledVersion 已进入修复范围。"
+      ],
+      "recommended_version": "2.6.6",
+      "version_source": "trivy_fixed_version",
+      "confidence": "high",
+      "research_status": "not_requested",
+      "evidence": []
+    }
+  ],
+  "partial": false,
+  "warnings": [
+    "教学示例：本报告使用离线固定分析响应生成，仅展示 Skill 元数据，未实际调用 Codex 或 Skill，也未执行联网增强。"
+  ]
+}

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trivy-ai-report"
+version = "0.1.0"
+description = "Generate a deterministic Chinese HTML remediation report from Trivy JSON with Codex, Claude, or Gemini."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "jinja2>=3.1,<4",
+  "pydantic>=2.10,<3",
+]
+
+[project.optional-dependencies]
+codex = ["openai-codex>=0.144.4"]
+claude = ["claude-agent-sdk>=0.2.130,<1"]
+gemini = ["google-adk>=2.6,<3"]
+all = [
+  "openai-codex>=0.144.4",
+  "claude-agent-sdk>=0.2.130,<1",
+  "google-adk>=2.6,<3",
+]
+
+[dependency-groups]
+dev = [
+  "beautifulsoup4>=4.12,<5",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+trivy-ai-report = "trivy_ai_report.cli:main"
+trivy-report-codex = "trivy_ai_report.codex_cli:main"
+trivy-report-claude = "trivy_ai_report.claude_cli:main"
+trivy-report-gemini = "trivy_ai_report.gemini_cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trivy_ai_report"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

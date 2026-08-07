@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; object-src 'none'; media-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="color-scheme" content="light">
+  <title>Trivy 脆弱性整改报告 · alpine:3.10</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #647089;
+      --line: #dce2eb;
+      --surface: #ffffff;
+      --canvas: #f4f7fb;
+      --navy: #172a46;
+      --blue: #2266d3;
+      --blue-soft: #eaf2ff;
+      --critical: #a61b2b;
+      --critical-soft: #fdecef;
+      --high: #c2410c;
+      --high-soft: #fff0e7;
+      --medium: #9a6700;
+      --medium-soft: #fff8d9;
+      --low: #18794e;
+      --low-soft: #e8f7ef;
+      --unknown: #586174;
+      --unknown-soft: #eef0f4;
+      --warning: #8a4b08;
+      --warning-soft: #fff5df;
+      --shadow: 0 10px 28px rgb(21 42 75 / 8%);
+      --radius: 14px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      line-height: 1.6;
+    }
+    a { color: var(--blue); text-underline-offset: 3px; }
+    code {
+      padding: .08rem .32rem;
+      border: 1px solid #d7dfeb;
+      border-radius: 5px;
+      background: #f7f9fc;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .9em;
+      overflow-wrap: anywhere;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h2 { margin-bottom: 1rem; font-size: 1.35rem; }
+    h3 { margin-bottom: .55rem; font-size: 1.08rem; }
+    .page { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding-bottom: 56px; }
+    .hero {
+      margin-bottom: 24px;
+      padding: 36px 0 28px;
+      color: #fff;
+      background: linear-gradient(120deg, #142641, #244d7e);
+      border-bottom: 4px solid #5aa4ff;
+    }
+    .hero-inner { width: min(1180px, calc(100% - 32px)); margin: 0 auto; }
+    .eyebrow {
+      margin-bottom: 8px;
+      color: #a8d2ff;
+      font-size: .76rem;
+      font-weight: 750;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .hero h1 { margin-bottom: 6px; font-size: clamp(1.7rem, 4vw, 2.7rem); line-height: 1.2; }
+    .hero-subtitle { margin-bottom: 22px; color: #d7e7f9; overflow-wrap: anywhere; }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .meta-item {
+      min-width: 0;
+      padding: 10px 12px;
+      border: 1px solid rgb(255 255 255 / 18%);
+      border-radius: 10px;
+      background: rgb(255 255 255 / 7%);
+    }
+    .meta-label { display: block; color: #aac4e1; font-size: .72rem; }
+    .meta-value { display: block; font-size: .9rem; font-weight: 650; overflow-wrap: anywhere; }
+    .panel {
+      margin-bottom: 20px;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .warning-panel {
+      border-color: #edcf9c;
+      background: var(--warning-soft);
+      box-shadow: none;
+    }
+    .warning-panel h2 { margin-bottom: .4rem; color: var(--warning); font-size: 1.05rem; }
+    .warning-panel ul { margin: .4rem 0 0; padding-left: 1.2rem; }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .stat {
+      padding: 14px 12px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: #fafbfd;
+    }
+    .stat-label { color: var(--muted); font-size: .75rem; }
+    .stat-value { display: block; margin-top: 2px; font-size: 1.55rem; font-weight: 800; line-height: 1.2; }
+    .stat-critical .stat-value { color: var(--critical); }
+    .stat-high .stat-value { color: var(--high); }
+    .stat-medium .stat-value { color: var(--medium); }
+    .stat-low .stat-value { color: var(--low); }
+    .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+    .search-wrap { flex: 1 1 300px; }
+    .search-wrap label { display: block; margin-bottom: 5px; color: var(--muted); font-size: .78rem; }
+    #finding-search {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #b9c5d6;
+      border-radius: 9px;
+      color: var(--ink);
+      background: #fff;
+      font: inherit;
+    }
+    #finding-search:focus { outline: 3px solid #cfe3ff; border-color: var(--blue); }
+    .severity-filters { display: flex; flex-wrap: wrap; gap: 6px; align-self: flex-end; }
+    .filter-button {
+      padding: 9px 11px;
+      border: 1px solid #b9c5d6;
+      border-radius: 999px;
+      color: var(--ink);
+      background: #fff;
+      cursor: pointer;
+      font: inherit;
+      font-size: .8rem;
+      font-weight: 650;
+    }
+    .filter-button:hover, .filter-button[aria-pressed="true"] {
+      border-color: var(--blue);
+      color: #fff;
+      background: var(--blue);
+    }
+    .result-count { margin: 12px 0 0; color: var(--muted); font-size: .82rem; }
+    .remediation-list { display: grid; gap: 16px; }
+    .finding-card {
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--unknown);
+      border-radius: 12px;
+      background: #fff;
+      overflow: hidden;
+      box-shadow: 0 5px 18px rgb(21 42 75 / 6%);
+    }
+    .finding-card[data-severity="CRITICAL"] { border-left-color: var(--critical); }
+    .finding-card[data-severity="HIGH"] { border-left-color: var(--high); }
+    .finding-card[data-severity="MEDIUM"] { border-left-color: var(--medium); }
+    .finding-card[data-severity="LOW"] { border-left-color: var(--low); }
+    .finding-heading {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 17px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #fafbfd;
+    }
+    .finding-heading h3 { margin: 0; overflow-wrap: anywhere; }
+    .finding-heading p { margin: 3px 0 0; color: var(--muted); font-size: .84rem; overflow-wrap: anywhere; }
+    .badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      padding: 3px 8px;
+      border-radius: 999px;
+      color: var(--unknown);
+      background: var(--unknown-soft);
+      font-size: .7rem;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+    .badge-critical { color: var(--critical); background: var(--critical-soft); }
+    .badge-high { color: var(--high); background: var(--high-soft); }
+    .badge-medium { color: var(--medium); background: var(--medium-soft); }
+    .badge-low { color: var(--low); background: var(--low-soft); }
+    .badge-fact { color: #225c91; background: #e7f2fc; }
+    .badge-ai { color: #6043a6; background: #efeafe; }
+    .badge-web { color: #11665c; background: #e2f5f2; }
+    .badge-warning { color: var(--warning); background: var(--warning-soft); }
+    .finding-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
+    .fact-block, .advice-block { min-width: 0; padding: 18px; }
+    .fact-block { border-right: 1px solid var(--line); background: #fbfcfe; }
+    .block-title { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+    .block-title h4 { margin: 0; font-size: .94rem; }
+    .fact-list {
+      display: grid;
+      grid-template-columns: minmax(105px, .5fr) minmax(0, 1.5fr);
+      gap: 7px 10px;
+      margin: 0;
+      font-size: .83rem;
+    }
+    .fact-list dt { color: var(--muted); }
+    .fact-list dd { margin: 0; overflow-wrap: anywhere; }
+    .description { margin: 14px 0 0; color: #3d485c; font-size: .83rem; white-space: pre-wrap; }
+    .source-links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; font-size: .78rem; }
+    .advice-title { margin-bottom: 8px; }
+    .advice-rationale { color: #344056; font-size: .88rem; white-space: pre-wrap; }
+    .advice-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .steps {
+      margin: 7px 0 0;
+      padding-left: 1.2rem;
+      color: #344056;
+      font-size: .84rem;
+    }
+    .steps li + li { margin-top: 5px; }
+    .recommendation-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      margin: 13px 0 0;
+      padding-top: 12px;
+      border-top: 1px dashed var(--line);
+      color: var(--muted);
+      font-size: .76rem;
+    }
+    .evidence {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border: 1px solid #bce1dc;
+      border-radius: 9px;
+      background: #f1fbf9;
+    }
+    .evidence h5 { margin: 0 0 7px; font-size: .83rem; }
+    .evidence ul { margin: 0; padding-left: 1.1rem; font-size: .8rem; }
+    .evidence li + li { margin-top: 7px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+    th, td { padding: 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: #4b5870; background: #f6f8fb; font-size: .73rem; letter-spacing: .02em; }
+    td { overflow-wrap: anywhere; }
+    tbody tr:hover { background: #f8fbff; }
+    .empty {
+      padding: 30px;
+      border: 1px dashed #b9c5d6;
+      border-radius: 10px;
+      color: var(--muted);
+      text-align: center;
+    }
+    [hidden] { display: none !important; }
+    .footer { color: var(--muted); font-size: .75rem; text-align: center; }
+
+    @media (max-width: 900px) {
+      .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .finding-body { grid-template-columns: 1fr; }
+      .fact-block { border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+    @media (max-width: 580px) {
+      .page, .hero-inner { width: min(100% - 20px, 1180px); }
+      .hero { padding-top: 26px; }
+      .meta-grid, .summary-grid, .advice-columns { grid-template-columns: 1fr 1fr; }
+      .finding-heading { flex-direction: column; }
+      .panel { padding: 16px; }
+    }
+    @media print {
+      body { background: #fff; }
+      .hero { color: #111; background: #fff; border-bottom-color: #333; }
+      .hero-subtitle, .eyebrow, .meta-label { color: #444; }
+      .meta-item { border-color: #aaa; }
+      .controls-panel { display: none; }
+      .panel, .finding-card { box-shadow: none; break-inside: avoid; }
+      a { color: #111; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="eyebrow">Trivy · Agent-assisted remediation</p>
+      <h1>脆弱性整改报告</h1>
+      <p class="hero-subtitle">alpine:3.10</p>
+      <div class="meta-grid" aria-label="报告元数据">
+        <div class="meta-item">
+          <span class="meta-label">Artifact 类型</span>
+          <span class="meta-value">container_image</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">操作系统</span>
+          <span class="meta-value">alpine 3.10.9 · EOSL</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Agent / Skill</span>
+          <span class="meta-value">
+            claude · offline-fixture<br>
+            Skill: trivy-remediation
+          </span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">生成时间</span>
+          <span class="meta-value">2026-08-05T00:00:00+00:00</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Trivy Schema</span>
+          <span class="meta-value">v2</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Trivy 创建时间</span>
+          <span class="meta-value">2023-03-01T11:07:17.938+02:00</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">联网增强</span>
+          <span class="meta-value">未启用</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">报告完整性</span>
+          <span class="meta-value">完整</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="panel warning-panel" role="alert" aria-labelledby="warning-title">
+      <h2 id="warning-title">报告说明</h2>
+      <ul>
+<li>教学示例：本报告使用离线固定分析响应生成，仅展示 Skill 元数据，未实际调用 Claude Code 或 Skill，也未执行联网增强。</li>      </ul>
+    </section>
+
+    <section class="panel" aria-labelledby="summary-title">
+      <h2 id="summary-title">风险概览</h2>
+      <div class="summary-grid">
+        <div class="stat"><span class="stat-label">漏洞总数</span><strong class="stat-value">1</strong></div>
+        <div class="stat"><span class="stat-label">可修复</span><strong class="stat-value">1</strong></div>
+        <div class="stat stat-critical"><span class="stat-label">Critical</span><strong class="stat-value">1</strong></div>
+        <div class="stat stat-high"><span class="stat-label">High</span><strong class="stat-value">0</strong></div>
+        <div class="stat stat-medium"><span class="stat-label">Medium</span><strong class="stat-value">0</strong></div>
+        <div class="stat stat-low"><span class="stat-label">Low</span><strong class="stat-value">0</strong></div>
+        <div class="stat"><span class="stat-label">Unknown</span><strong class="stat-value">0</strong></div>
+      </div>
+    </section>
+
+    <section class="panel controls-panel" aria-labelledby="filter-title">
+      <h2 id="filter-title">筛选报告</h2>
+      <div class="controls">
+        <div class="search-wrap">
+          <label for="finding-search">搜索 CVE、包名、版本、Target 或建议</label>
+          <input id="finding-search" type="search" placeholder="例如：CVE-2022-22965 或 spring-boot" autocomplete="off">
+        </div>
+        <div class="severity-filters" aria-label="严重度筛选">
+          <button class="filter-button" type="button" data-filter-severity="ALL" aria-pressed="true">全部</button>
+          <button class="filter-button" type="button" data-filter-severity="CRITICAL" aria-pressed="false">CRITICAL</button>
+          <button class="filter-button" type="button" data-filter-severity="HIGH" aria-pressed="false">HIGH</button>
+          <button class="filter-button" type="button" data-filter-severity="MEDIUM" aria-pressed="false">MEDIUM</button>
+          <button class="filter-button" type="button" data-filter-severity="LOW" aria-pressed="false">LOW</button>
+          <button class="filter-button" type="button" data-filter-severity="UNKNOWN" aria-pressed="false">UNKNOWN</button>
+        </div>
+      </div>
+      <p id="result-count" class="result-count" aria-live="polite">显示 1 / 1 条漏洞</p>
+    </section>
+
+    <section aria-labelledby="remediation-title">
+      <h2 id="remediation-title">优先整改建议</h2>
+      <div class="remediation-list">
+        <article id="finding-4fd75c60e0812f0247039ca9fbbadf4433a5c63038c24670c32104588af721b8" class="finding-card" data-filter-item data-severity="CRITICAL" data-search="cve-2021-36159 apk-tools 2.10.6-r0 2.10.7-r0 alpine:3.10 (alpine 3.10.9) libfetch mishandles an http server response 迁移出 alpine 3.10 eosl 基础镜像，并同步修复 apk-tools trivy 标记 alpine 3.10.9 已结束支持；即使单独将 apk-tools 从 2.10.6-r0 升到 fixedversion 2.10.7-r0，也不能恢复整个 os 的安全更新。应把基础镜像迁移到组织批准且仍受支持的 alpine 版本，同时确认新镜像中的 apk-tools 不低于 trivy 给出的修复版本。">
+          <header class="finding-heading">
+            <div>
+              <h3>CVE-2021-36159 · apk-tools</h3>
+              <p>libfetch mishandles an HTTP server response</p>
+            </div>
+            <div class="badges">
+              <span class="badge badge-critical">CRITICAL</span>
+              <span class="badge">P0</span>
+              <span class="badge">升级基础镜像 / OS</span>
+            </div>
+          </header>
+          <div class="finding-body">
+            <section class="fact-block" aria-label="Trivy 事实">
+              <div class="block-title"><span class="badge badge-fact">Trivy 事实</span><h4>扫描器原始字段</h4></div>
+              <dl class="fact-list">
+                <dt>Vulnerability</dt><dd><code>CVE-2021-36159</code></dd>
+                <dt>Package</dt><dd><code>apk-tools</code><br>apk-tools@2.10.6-r0</dd>
+                <dt>InstalledVersion</dt><dd><code>2.10.6-r0</code></dd>
+                <dt>FixedVersion</dt><dd><code>2.10.7-r0</code></dd>
+                <dt>Status</dt><dd>fixed · 可修复</dd>
+                <dt>Target</dt><dd>alpine:3.10 (alpine 3.10.9)</dd>
+                <dt>Class / Type</dt><dd>os-pkgs / alpine</dd>
+              </dl>
+<p class="description">libfetch before 2021-07-26, as used in apk-tools and other products, may mishandle a crafted HTTP server response.</p>              <div class="source-links">
+                <a href="https://avd.aquasec.com/nvd/cve-2021-36159" target="_blank" rel="noopener noreferrer nofollow">Trivy 主链接</a>
+                <a href="https://nvd.nist.gov/vuln/detail/CVE-2021-36159" target="_blank" rel="noopener noreferrer nofollow">参考资料</a>
+              </div>
+            </section>
+
+            <section class="advice-block" aria-label="AI 建议">
+              <div class="block-title">
+                <span class="badge badge-ai">AI 建议</span>
+                <span class="badge ">未启用联网核验</span>
+              </div>
+              <h4 class="advice-title">迁移出 Alpine 3.10 EOSL 基础镜像，并同步修复 apk-tools</h4>
+              <p class="advice-rationale">Trivy 标记 Alpine 3.10.9 已结束支持；即使单独将 apk-tools 从 2.10.6-r0 升到 FixedVersion 2.10.7-r0，也不能恢复整个 OS 的安全更新。应把基础镜像迁移到组织批准且仍受支持的 Alpine 版本，同时确认新镜像中的 apk-tools 不低于 Trivy 给出的修复版本。</p>
+              <div class="advice-columns">
+                <div>
+                  <h4>修改步骤</h4>
+                  <ol class="steps"><li>选择组织允许且仍受支持的 Alpine 基础镜像，并在 Dockerfile 中使用不可变 digest 固定经过测试的镜像。</li><li>在隔离分支重建应用；如暂时无法迁移，至少执行 apk upgrade --no-cache apk-tools 作为短期措施，但不要把它视为 EOSL 的完整解决方案。</li><li>检查 libc、TLS、时区与原生扩展等跨 Alpine 版本兼容性，再逐步发布新镜像。</li></ol>
+                </div>
+                <div>
+                  <h4>验证方式</h4>
+                  <ol class="steps"><li>在新容器中读取 /etc/alpine-release，并确认 Trivy Metadata.OS.EOSL 不再为 true。</li><li>重新运行 Trivy，确认 apk-tools InstalledVersion 已达到修复范围，并执行应用回归与容器启动探针测试。</li></ol>
+                </div>
+              </div>
+              <div class="recommendation-meta">
+                <span>建议版本：<strong>未指定</strong></span>
+                <span>版本依据：<strong>未指定</strong></span>
+                <span>置信度：<strong>high</strong></span>
+              </div>
+            </section>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="table-title" style="margin-top: 24px">
+      <h2 id="table-title">漏洞明细</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>严重度</th><th>漏洞</th><th>包</th><th>当前版本</th><th>修复版本</th><th>Target</th><th>建议</th></tr></thead>
+          <tbody>
+            <tr data-finding-row data-filter-item data-severity="CRITICAL" data-search="cve-2021-36159 apk-tools 2.10.6-r0 2.10.7-r0 alpine:3.10 (alpine 3.10.9) libfetch mishandles an http server response 迁移出 alpine 3.10 eosl 基础镜像，并同步修复 apk-tools trivy 标记 alpine 3.10.9 已结束支持；即使单独将 apk-tools 从 2.10.6-r0 升到 fixedversion 2.10.7-r0，也不能恢复整个 os 的安全更新。应把基础镜像迁移到组织批准且仍受支持的 alpine 版本，同时确认新镜像中的 apk-tools 不低于 trivy 给出的修复版本。">
+              <td><span class="badge badge-critical">CRITICAL</span></td>
+              <td><a href="#finding-4fd75c60e0812f0247039ca9fbbadf4433a5c63038c24670c32104588af721b8">CVE-2021-36159</a></td>
+              <td><code>apk-tools</code></td>
+              <td><code>2.10.6-r0</code></td>
+              <td><code>2.10.7-r0</code></td>
+              <td>alpine:3.10 (alpine 3.10.9)</td>
+              <td>迁移出 Alpine 3.10 EOSL 基础镜像，并同步修复 apk-tools</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <p class="footer">本报告将 Trivy 扫描事实与 Agent 建议分层展示。任何整改建议都应经过测试，并以重新扫描结果为准。</p>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+      const search = document.getElementById("finding-search");
+      if (!search) return;
+      const buttons = Array.from(document.querySelectorAll("[data-filter-severity]"));
+      const items = Array.from(document.querySelectorAll("[data-filter-item]"));
+      const rows = Array.from(document.querySelectorAll("[data-finding-row]"));
+      const counter = document.getElementById("result-count");
+      let activeSeverity = "ALL";
+
+      const applyFilters = () => {
+        const query = search.value.trim().toLocaleLowerCase("zh-CN");
+        items.forEach((item) => {
+          const severityMatches = activeSeverity === "ALL" || item.dataset.severity === activeSeverity;
+          const searchMatches = !query || (item.dataset.search || "").includes(query);
+          item.hidden = !(severityMatches && searchMatches);
+        });
+        const visibleRows = rows.filter((row) => !row.hidden).length;
+        counter.textContent = `显示 ${visibleRows} / ${rows.length} 条漏洞`;
+      };
+
+      search.addEventListener("input", applyFilters);
+      buttons.forEach((button) => {
+        button.addEventListener("click", () => {
+          activeSeverity = button.dataset.filterSeverity || "ALL";
+          buttons.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+          applyFilters();
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
