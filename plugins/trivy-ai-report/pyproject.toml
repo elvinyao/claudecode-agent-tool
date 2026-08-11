@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trivy-ai-report"
+version = "0.2.0"
+description = "Trivy remediation domain plugin for agent-core."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "agent-core>=0.1,<0.2",
+  "jinja2>=3.1,<4",
+  "pydantic>=2.10,<3",
+]
+
+[project.optional-dependencies]
+codex = ["agent-core[codex]>=0.1,<0.2"]
+claude = ["agent-core[claude]>=0.1,<0.2"]
+web = ["agent-core[web]>=0.1,<0.2"]
+all = ["agent-core[all]>=0.1,<0.2"]
+
+[project.entry-points."agent_core.domain_plugins"]
+trivy = "trivy_ai_report.plugin:create_plugin"
+
+[tool.uv.sources]
+agent-core = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trivy_ai_report"]

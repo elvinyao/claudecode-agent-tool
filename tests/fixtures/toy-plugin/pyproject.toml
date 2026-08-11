@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "toy-agent-plugin-fixture"
+version = "0.1.0"
+description = "Independent domain-plugin fixture used to verify agent-core genericity."
+requires-python = ">=3.10"
+dependencies = [
+  "agent-core>=0.1,<0.2",
+  "pydantic>=2.10,<3",
+]
+
+[project.entry-points."agent_core.domain_plugins"]
+toy = "toy_agent_plugin.plugin:create_plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/toy_agent_plugin"]
