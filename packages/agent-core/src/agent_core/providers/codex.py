@@ -10,6 +10,7 @@ from typing import Any
 from agent_core.contracts import AgentRequest, ProviderResult
 from agent_core.providers.base import BaseProvider, OutputT
 from agent_core.providers.capabilities import ProviderCapabilities
+from agent_core.providers.codex_schema import validate_codex_output_schema
 from agent_core.providers.errors import ProviderUnavailableError
 from agent_core.providers.structured import validate_structured_output
 from agent_core.skills import CODEX_SKILL_LAYOUT, stage_skill
@@ -45,6 +46,9 @@ class CodexProvider(BaseProvider):
         self,
         request: AgentRequest[OutputT],
     ) -> ProviderResult[OutputT]:
+        schema = request.response_model.model_json_schema()
+        validate_codex_output_schema(schema)
+
         sdk = self._load_sdk()
         if self.skills:
             try:
@@ -57,8 +61,6 @@ class CodexProvider(BaseProvider):
                 ) from exc
 
         web_mode = "live" if request.tool_policy.web_access else "disabled"
-        schema = request.response_model.model_json_schema()
-
         with TemporaryDirectory(prefix="agent-core-codex-") as cwd:
             run_input: Any = request.prompt
             if self.skills:

@@ -23,6 +23,8 @@ from trivy_ai_report.domain import (
 )
 from trivy_ai_report.models import (
     Evidence,
+    ProviderRecommendation,
+    ProviderRecommendationBatch,
     Recommendation,
     RecommendationCategory,
     ResearchStatus,
@@ -95,6 +97,12 @@ def _named_report(*, artifact: str, vulnerability: str, package: str) -> bytes:
     ).encode()
 
 
+def _provider_recommendation(advice: Recommendation) -> ProviderRecommendation:
+    """Populate the explicit wire contract from a domain fixture."""
+
+    return ProviderRecommendation.model_validate(advice.model_dump(mode="python"))
+
+
 def test_batches_are_stable_and_use_domain_defaults() -> None:
     offline = plan_batches(parse_input_bytes(_report(26), TrivyRunOptions()))
     online = plan_batches(
@@ -142,19 +150,59 @@ def test_offline_finalization_strips_agent_citations() -> None:
     assert outcome.recommendations[0].evidence == []
 
 
-def test_plugin_plans_domain_prompt_and_schema() -> None:
+def test_plugin_plans_domain_prompt_and_strict_wire_schema() -> None:
     parsed = parse_input_bytes(_report(1), TrivyRunOptions(enrich_web=True))
 
     request = plan_agent_requests(parsed)[0]
 
     assert request.request_id == "batch-0001"
-    assert request.response_model.__name__ == "RecommendationBatch"
+    assert request.response_model is ProviderRecommendationBatch
     assert request.tool_policy.web_access is True
     assert "Trivy" in request.system_prompt
     assert parsed.report.findings[0].finding_id in request.prompt
     assert request.metadata["finding_ids"] == (
         parsed.report.findings[0].finding_id,
     )
+
+
+def test_provider_wire_schema_requires_every_object_property() -> None:
+    schema = ProviderRecommendationBatch.model_json_schema()
+
+    def assert_all_properties_required(value: object) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "object":
+                assert set(value.get("required", ())) == set(value["properties"])
+            for child in value.values():
+                assert_all_properties_required(child)
+        elif isinstance(value, list):
+            for child in value:
+                assert_all_properties_required(child)
+
+    assert_all_properties_required(schema)
+    recommended_version = schema["$defs"]["ProviderRecommendation"]["properties"][
+        "recommended_version"
+    ]
+    assert {variant.get("type") for variant in recommended_version["anyOf"]} == {
+        "string",
+        "null",
+    }
+
+
+def test_provider_wire_model_rejects_omitted_explicit_fields() -> None:
+    parsed = parse_input_bytes(_report(1), TrivyRunOptions())
+    finding_id = parsed.report.findings[0].finding_id
+
+    with pytest.raises(ValueError, match="recommended_version"):
+        ProviderRecommendation.model_validate(
+            {
+                "finding_id": finding_id,
+                "category": "os_package_upgrade",
+                "title_zh": "升级软件包",
+                "rationale_zh": "使用发行版安全更新。",
+                "actions_zh": ["升级并重建镜像。"],
+                "validation_zh": ["重新运行 Trivy。"],
+            }
+        )
 
 
 def test_bundled_skill_is_wheel_local_and_valid() -> None:
@@ -191,7 +239,9 @@ def test_failed_batches_become_deterministic_partial_fallbacks() -> None:
             request_id=first.request_id,
             provider="codex",
             model="test-model",
-            output=first.response_model(recommendations=[advice]),
+            output=first.response_model(
+                recommendations=[_provider_recommendation(advice)]
+            ).to_domain(),
         ),
     )
     failed = TrivyAgentBatchOutcome(
@@ -222,7 +272,7 @@ def test_provider_partial_flag_propagates_without_relying_on_warning_text() -> N
         request_id=request.request_id,
         provider="codex",
         model="test-model",
-        output=request.response_model(recommendations=[]),
+        output=request.response_model(recommendations=[]).to_domain(),
         partial=True,
     )
 
@@ -276,7 +326,7 @@ async def test_trivy_workflow_degrades_without_losing_the_report() -> None:
 async def test_trivy_workflow_uses_typed_provider_result_end_to_end() -> None:
     raw = _report(1)
     finding = parse_input_bytes(raw, TrivyRunOptions()).report.findings[0]
-    advice = Recommendation(
+    advice = ProviderRecommendation(
         finding_id=finding.finding_id,
         category=RecommendationCategory.OS_PACKAGE_UPGRADE,
         title_zh="经过类型校验的升级建议",
@@ -285,6 +335,9 @@ async def test_trivy_workflow_uses_typed_provider_result_end_to_end() -> None:
         validation_zh=["重新运行 Trivy。"],
         recommended_version="1.1",
         version_source=VersionSource.TRIVY_FIXED_VERSION,
+        confidence="high",
+        research_status=ResearchStatus.NOT_REQUESTED,
+        evidence=[],
     )
 
     class SuccessfulProvider:
@@ -323,14 +376,19 @@ async def test_trivy_workflow_rejects_cross_batch_finding_identity() -> None:
     parsed = parse_input_bytes(raw, TrivyRunOptions(batch_size=1))
     first_finding, second_finding = parsed.report.findings
 
-    def advice_for(finding_id: str) -> Recommendation:
-        return Recommendation(
+    def advice_for(finding_id: str) -> ProviderRecommendation:
+        return ProviderRecommendation(
             finding_id=finding_id,
             category=RecommendationCategory.OS_PACKAGE_UPGRADE,
             title_zh="跨批次建议",
             rationale_zh="不应被接受。",
             actions_zh=["拒绝该响应。"],
             validation_zh=["使用本地 fallback。"],
+            recommended_version=None,
+            version_source=VersionSource.NONE,
+            confidence="low",
+            research_status=ResearchStatus.NOT_REQUESTED,
+            evidence=[],
         )
 
     class CrossBatchProvider:

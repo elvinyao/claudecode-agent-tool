@@ -146,6 +146,12 @@ def classify_provider_exception(exc: Exception, *, provider: str) -> ProviderErr
     message = str(exc).strip() or exc.__class__.__name__
     normalized_name = exc.__class__.__name__.lower()
 
+    if "invalid_json_schema" in message.casefold():
+        return ProviderConfigurationError(
+            "provider rejected the structured-output schema",
+            provider=provider,
+        )
+
     if status == 401:
         return ProviderAuthenticationError(message, provider=provider)
     if status == 403 or any(

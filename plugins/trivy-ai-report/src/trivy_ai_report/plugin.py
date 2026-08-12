@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol
 
-from agent_core.contracts import AgentRequest, ToolPolicy
+from agent_core.contracts import AgentRequest, ProviderResult, ToolPolicy
 from agent_core.providers import ProviderAdapter
 from agent_core.providers.errors import ProviderResponseError
 from agent_core.registry import PluginManifest
@@ -22,7 +22,11 @@ from trivy_ai_report.domain import (
     plan_batches,
     render_report,
 )
-from trivy_ai_report.models import RecommendationBatch, TrivyRunOptions
+from trivy_ai_report.models import (
+    ProviderRecommendationBatch,
+    RecommendationBatch,
+    TrivyRunOptions,
+)
 from trivy_ai_report.prompts import SYSTEM_PROMPT, build_analysis_prompt
 
 PLUGIN_ID = "trivy"
@@ -57,18 +61,18 @@ def load_bundled_skill() -> SkillSpec:
 
 def plan_agent_requests(
     parsed: ParsedTrivyRun,
-) -> tuple[AgentRequest[RecommendationBatch], ...]:
+) -> tuple[AgentRequest[ProviderRecommendationBatch], ...]:
     """Turn deterministic Trivy batches into provider-neutral typed requests."""
 
     return tuple(
-        AgentRequest[RecommendationBatch](
+        AgentRequest[ProviderRecommendationBatch](
             request_id=batch.batch_id,
             system_prompt=SYSTEM_PROMPT,
             prompt=build_analysis_prompt(
                 batch.findings,
                 enrich_web=parsed.options.enrich_web,
             ),
-            response_model=RecommendationBatch,
+            response_model=ProviderRecommendationBatch,
             tool_policy=ToolPolicy(web_access=parsed.options.enrich_web),
             metadata={
                 "domain": PLUGIN_ID,
@@ -77,6 +81,21 @@ def plan_agent_requests(
             },
         )
         for batch in plan_batches(parsed)
+    )
+
+
+def _to_domain_result(
+    result: ProviderResult[ProviderRecommendationBatch],
+) -> ProviderResult[RecommendationBatch]:
+    """Convert validated wire output into the plugin's stable domain contract."""
+
+    return ProviderResult[RecommendationBatch](
+        request_id=result.request_id,
+        provider=result.provider,
+        model=result.model,
+        output=result.output.to_domain(),
+        warnings=result.warnings,
+        partial=result.partial,
     )
 
 
@@ -101,10 +120,12 @@ class TrivyPlugin:
 
     def create_workflow(self, runtime: PluginRuntime) -> Workflow:
         async def analyze_one(
-            request: AgentRequest[RecommendationBatch],
+            request: AgentRequest[ProviderRecommendationBatch],
             _context: WorkflowContext,
         ) -> TrivyAgentBatchOutcome:
-            result = await runtime.provider.execute(request)
+            result: ProviderResult[ProviderRecommendationBatch] = (
+                await runtime.provider.execute(request)
+            )
             expected = set(request.metadata["finding_ids"])
             returned = [item.finding_id for item in result.output.recommendations]
             if len(returned) != len(set(returned)) or any(
@@ -116,12 +137,12 @@ class TrivyPlugin:
                 )
             return TrivyAgentBatchOutcome(
                 batch_id=request.request_id,
-                result=result,
+                result=_to_domain_result(result),
                 partial=result.partial,
             )
 
         def failed_batch(
-            request: AgentRequest[RecommendationBatch],
+            request: AgentRequest[ProviderRecommendationBatch],
             error: Exception,
             _context: WorkflowContext,
         ) -> TrivyAgentBatchOutcome:

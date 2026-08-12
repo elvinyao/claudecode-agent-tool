@@ -148,11 +148,54 @@ class Recommendation(BaseModel):
 
 
 class RecommendationBatch(BaseModel):
-    """Provider-neutral structured output schema."""
+    """Domain recommendations after provider output has crossed the wire boundary."""
 
     model_config = ConfigDict(extra="forbid")
 
     recommendations: list[Recommendation]
+
+
+class ProviderRecommendation(BaseModel):
+    """Strict structured-output contract returned by an Agent provider.
+
+    Every field is intentionally required by the wire schema. Nullable values use
+    an explicit JSON ``null`` rather than relying on an omitted field and a domain
+    default.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    finding_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    category: RecommendationCategory
+    title_zh: str = Field(min_length=1, max_length=300)
+    rationale_zh: str = Field(min_length=1, max_length=2_000)
+    actions_zh: list[str] = Field(min_length=1, max_length=8)
+    validation_zh: list[str] = Field(min_length=1, max_length=6)
+    recommended_version: str | None = Field(max_length=300)
+    version_source: VersionSource
+    confidence: Literal["low", "medium", "high"]
+    research_status: ResearchStatus
+    evidence: list[Evidence] = Field(max_length=10)
+
+    def to_domain(self) -> Recommendation:
+        """Revalidate provider data against the stable domain model."""
+
+        return Recommendation.model_validate(self.model_dump(mode="python"))
+
+
+class ProviderRecommendationBatch(BaseModel):
+    """Top-level wire schema used only for provider structured output."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    recommendations: list[ProviderRecommendation]
+
+    def to_domain(self) -> RecommendationBatch:
+        """Explicitly cross the provider-to-domain trust boundary."""
+
+        return RecommendationBatch(
+            recommendations=[item.to_domain() for item in self.recommendations]
+        )
 
 
 class AnalysisOutcome(BaseModel):

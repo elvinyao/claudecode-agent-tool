@@ -121,6 +121,22 @@ def test_sdk_error_classifier_preserves_retry_metadata() -> None:
     assert error.public_message == "Provider rate limit was exceeded"
 
 
+def test_invalid_json_schema_is_a_sanitized_configuration_error() -> None:
+    failure = RuntimeError(
+        "400 invalid_json_schema: missing secret_field from a private schema"
+    )
+
+    error = classify_provider_exception(failure, provider="codex")
+
+    assert isinstance(error, ProviderConfigurationError)
+    assert error.code == "provider_configuration"
+    assert error.provider == "codex"
+    assert error.retryable is False
+    assert error.public_message == "Provider configuration is invalid"
+    assert "secret_field" not in error.public_message
+    assert "secret_field" not in str(error)
+
+
 @pytest.mark.parametrize(
     ("status_code", "expected_type", "retryable"),
     [
