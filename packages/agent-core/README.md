@@ -1,20 +1,41 @@
 # agent-core
 
-Domain-neutral, local-first framework for combining deterministic Python steps with typed Codex or
-Claude Agent SDK steps.
+`agent-core` 是一个领域无关、本地优先的 Python Agent 工作流框架。确定性程序负责解析、规则、
+校验、渲染和副作用门控；Codex 或 Claude 只执行显式的
+`AgentRequest[T] -> ProviderResult[T]` 结构化推理。
 
-It provides strict artifact contracts, a validated typed DAG, per-run plugin/provider factories,
-safe Skill staging, retry/deadline/cancellation policy, ActionNode authority gates, metadata-only
-audit logging, a generic CLI, and an optional bounded FastAPI Job API.
+它提供：
 
-Install only what is required:
+- 严格的 `ArtifactInput` / `ArtifactOutput` / `AgentRequest` 契约；
+- `TransformNode`、`AgentNode`、`ActionNode` 组成的类型化 DAG；
+- retry、attempt timeout、总 deadline、fallback 和取消传播；
+- 每次 run 新建实例的插件/Provider factory；
+- 受限 Skill 校验和隔离 staging；
+- Codex/Claude adapter、metadata-only 审计、通用 CLI；
+- 可选的有界 FastAPI Job API 和 SSRF-resistant HTTPS I/O。
+
+基础包只依赖 Pydantic。包已经发布到你的 index 或使用本地 wheel 时，可以按需安装：
 
 ```bash
 pip install agent-core
 pip install 'agent-core[codex]'
 pip install 'agent-core[claude]'
 pip install 'agent-core[web]'
+pip install 'agent-core[all]'
 ```
 
-Domain packages register factories through the `agent_core.domain_plugins` entry-point group. See
-the workspace root README and `tests/fixtures/toy-plugin` for the complete contract.
+只安装 Core 不会自动安装任何领域插件。插件通过
+`agent_core.domain_plugins` entry-point group 注册零参数 factory；当前 Plugin API 是 `1.0`。
+
+Codex adapter 使用 `openai-codex` SDK 默认 bundled/pinned 的 Codex runtime，并复用本机 Codex
+登录状态；它不保证使用 `PATH` 中的 Codex executable。Claude adapter 当前验证的认证方式是
+`ANTHROPIC_API_KEY`。
+
+Codex structured-output schema 会在请求前递归预检：每个 object 的 `required` 必须精确覆盖
+`properties`，并且 `additionalProperties=false`。nullable field 应保留为 required 并允许 `null`，
+不能依赖 Python default 省略。
+
+源码仓库的完整快速开始、CLI/Web 使用、架构、数据流、插件教程、安全模型和调试手册见
+[项目主 README](https://github.com/elvinyao/claudecode-agent-tool/blob/dev/README.md)。完全不依赖
+Trivy 的参考插件见
+[Toy plugin fixture](https://github.com/elvinyao/claudecode-agent-tool/tree/dev/tests/fixtures/toy-plugin)。
