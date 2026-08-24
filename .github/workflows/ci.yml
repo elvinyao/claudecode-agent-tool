@@ -11,6 +11,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     strategy:
       fail-fast: false
       matrix:
@@ -23,10 +25,11 @@ jobs:
       - run: python -m pip install uv
       - run: uv lock --check
       - run: uv sync --locked --all-extras
-      - run: uv run ruff check packages/agent-core/src plugins/trivy-ai-report/src tests
-      - run: uv run pytest --cov=agent_core --cov=trivy_ai_report --cov-branch
+      - run: uv run ruff check packages/agent-core/src plugins/trivy-ai-report/src plugins/ankify/src tests
+      - run: uv run pytest --cov=agent_core --cov=trivy_ai_report --cov=ankify --cov-branch
       - run: uv build --package agent-core
       - run: uv build --package trivy-ai-report
+      - run: uv build --package ankify-agent
 
   wheel-smoke:
     runs-on: ubuntu-latest
@@ -38,7 +41,9 @@ jobs:
       - run: python -m pip install uv
       - run: uv build --package agent-core --out-dir dist
       - run: uv build --package trivy-ai-report --out-dir dist
+      - run: uv build --package ankify-agent --out-dir dist
       - run: uv venv .smoke-venv
-      - run: uv pip install --python .smoke-venv/bin/python dist/agent_core-*.whl dist/trivy_ai_report-*.whl
+      - run: uv pip install --python .smoke-venv/bin/python dist/agent_core-*.whl dist/trivy_ai_report-*.whl dist/ankify_agent-*.whl
       - run: uv pip check --python .smoke-venv/bin/python
-      - run: .smoke-venv/bin/python -c "from agent_core.registry import PluginRegistry; assert PluginRegistry.from_entry_points().get('trivy').version == '0.2.0'"
+      - run: .smoke-venv/bin/python -c "from agent_core.registry import PluginRegistry; r = PluginRegistry.from_entry_points(); assert r.get('trivy').version == '0.2.0'; assert r.get('ankify').version == '0.1.0'"
+      - run: .smoke-venv/bin/python -c "from importlib.resources import files; from ankify.eval.fixture_loader import load_eval_fixtures; assert files('ankify').joinpath('bundled_skills/ankify-authoring/SKILL.md').is_file(); assert len(load_eval_fixtures()) == 7"

@@ -1,0 +1,44 @@
+{
+  "id": "language-grammar",
+  "title": "Japanese grammar pattern cards",
+  "options": {
+    "study_purpose": "language",
+    "guide_profile": "language.general",
+    "strategy_version": "language-v1",
+    "source_mode": "materials_notes",
+    "deck_name": "日本語文法",
+    "requested_card_count": 4,
+    "language": "ja+zh",
+    "user_tags": ["eval", "language", "grammar", "jlpt-n3"],
+    "learning_language": "ja",
+    "native_language": "zh",
+    "target_exam": "jlpt_n3",
+    "language_task": "grammar",
+    "translation_direction": "learning_to_native",
+    "max_front_length": 130,
+    "max_back_length": 240
+  },
+  "source": {
+    "name": "grammar-note",
+    "filename": "grammar-note.txt",
+    "text": "文法メモ：〜てしまう。意味は、完了、または残念な気持ちを表す。接続は動詞のて形＋しまう。例文：宿題を忘れてしまった。注意：ただの過去形ではなく、話し手の気持ちが入ることが多い。"
+  },
+  "expected_card_count": {"minimum": 3, "maximum": 5},
+  "expected_tags": ["language", "grammar", "jlpt-n3"],
+  "max_front_length": 130,
+  "max_back_length": 240,
+  "domain_checks": [
+    "basic_schema",
+    "count_range",
+    "length",
+    "front_back_distinct",
+    "duplicate_cards",
+    "source_ref",
+    "expected_tags",
+    "source_grounding"
+  ],
+  "rubric_notes": [
+    "Separate connection, meaning, example, and common mistake.",
+    "Do not use Cloze syntax."
+  ]
+}

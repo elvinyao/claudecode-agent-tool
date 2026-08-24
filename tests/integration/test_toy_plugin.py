@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 compatibility
+    import tomli as tomllib
 
 from agent_core.contracts import AgentRequest, ProviderResult
 from agent_core.providers import ProviderCapabilities

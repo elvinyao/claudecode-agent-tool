@@ -1,4 +1,6 @@
 .venv/
+.smoke-venv/
+.venv-py310/
 .pytest_cache/
 .ruff_cache/
 .coverage
@@ -7,3 +9,4 @@ __pycache__/
 dist/
 build/
 reports/
+eval/reports/

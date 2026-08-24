@@ -8,6 +8,8 @@ Codex 或 Claude**。程序拥有输入解析、事实、校验、重试策略�
 
 - `agent-core` `0.1.x`：领域无关的工作流、Provider、Skill、插件注册、CLI、审计和 Web Job API。
 - `trivy-ai-report` `0.2.x`：第一个领域插件，把 Trivy JSON v2 转成中文漏洞整改 HTML 报告。
+- `ankify-agent` `0.1.x`：来源可追溯的 Anki Basic 卡片 Agent，包含版本化学习策略和七组
+  Provider-neutral Eval fixtures。
 - 一个完全不依赖 Trivy 的 Toy 插件 fixture，用来证明 Core 可以复用于 Linter Fixer、FinOps
   Optimizer、K8s Log Analyzer 等其他领域。
 
@@ -676,6 +678,14 @@ echo $?
 │       ├── renderer.py        # Jinja2 HTML renderer
 │       ├── templates/         # HTML template
 │       └── bundled_skills/    # 随插件 wheel 发布的只读 Skill
+├── plugins/ankify/
+│   └── src/ankify/
+│       ├── source.py          # UTF-8/Markdown/JSON 来源块和稳定 ID
+│       ├── strategies/        # 版本化中学受验、语言、考试和自由策略
+│       ├── rules.py           # evidence/provenance/Basic/去重硬规则
+│       ├── plugin.py          # parse→plan→generate→merge→render DAG
+│       ├── eval/              # 七 fixtures、checker、Judge、runner、reporter
+│       └── bundled_skills/    # 制卡规则 Skill
 ├── tests/
 │   ├── core/ providers/ trivy/ web/
 │   ├── integration/           # 非 Trivy 端到端契约
@@ -974,9 +984,9 @@ python -m pip install 'agent-core[codex,web]' trivy-ai-report
 
 ```bash
 uv lock --check
-uv run ruff check packages/agent-core/src plugins/trivy-ai-report/src tests
+uv run ruff check packages/agent-core/src plugins/trivy-ai-report/src plugins/ankify/src tests
 uv run pytest
-uv run pytest --cov=agent_core --cov=trivy_ai_report --cov-branch
+uv run pytest --cov=agent_core --cov=trivy_ai_report --cov=ankify --cov-branch
 ```
 
 Coverage 配置启用 branch coverage，当前总门槛为 80%。默认测试不访问真实网络或付费 Provider。
@@ -987,6 +997,7 @@ Coverage 配置启用 branch coverage，当前总门槛为 80%。默认测试不
 uv run pytest tests/core
 uv run pytest tests/providers
 uv run pytest tests/trivy
+uv run pytest tests/ankify
 uv run pytest tests/web
 uv run pytest tests/integration tests/packaging
 ```
@@ -1038,6 +1049,7 @@ Claude smoke 还要求 `ANTHROPIC_API_KEY`。Codex smoke 使用本机 Codex 登�
 ```bash
 uv build --package agent-core --out-dir dist
 uv build --package trivy-ai-report --out-dir dist
+uv build --package ankify-agent --out-dir dist
 ```
 
 新建隔离环境检查发布边界：
@@ -1047,15 +1059,16 @@ uv venv .smoke-venv
 uv pip install \
   --python .smoke-venv/bin/python \
   dist/agent_core-*.whl \
-  dist/trivy_ai_report-*.whl
+  dist/trivy_ai_report-*.whl \
+  dist/ankify_agent-*.whl
 uv pip check --python .smoke-venv/bin/python
 .smoke-venv/bin/python -c "from agent_core.registry import PluginRegistry; print([p.plugin_id for p in PluginRegistry.from_entry_points().list()])"
 ```
 
 Windows 请把 `.smoke-venv/bin/python` 替换为 `.smoke-venv\Scripts\python.exe`。
 
-CI 在 Python 3.10/3.12 上执行 lock check、Ruff、pytest+branch coverage、两个 wheel build，并在
-clean venv 中执行 `pip check` 和 Trivy entry-point/version smoke。模板与 bundled Skill 的 wheel
+CI 在 Python 3.10/3.12 上执行 lock check、Ruff、pytest+branch coverage、三个 wheel build，并在
+clean venv 中执行 `pip check` 和插件 entry-point/version smoke。模板、fixtures 与 bundled Skill 的 wheel
 资源由 packaging pytest 覆盖，不要把 entry-point smoke 本身理解为真实 Provider 或渲染测试。
 
 ## 开发一个新领域插件
@@ -1509,6 +1522,7 @@ agent-core run --plugin trivy --provider claude ...
 
 - [`packages/agent-core`](packages/agent-core)：Core 包源码和简要包说明。
 - [`plugins/trivy-ai-report`](plugins/trivy-ai-report)：Trivy 插件源码和包说明。
+- [`plugins/ankify`](plugins/ankify)：Ankify 插件、Eval Harness 和领域 Agent 实施指南。
 - [`tests/fixtures/toy-plugin`](tests/fixtures/toy-plugin)：可运行的非 Trivy 插件参考。
 - [`examples/SOURCES.md`](examples/SOURCES.md)：教学 fixture 来源和限制。
 - [`.github/workflows/ci.yml`](.github/workflows/ci.yml)：仓库实际 CI 验证步骤。

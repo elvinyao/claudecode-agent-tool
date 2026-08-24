@@ -1,0 +1,41 @@
+{
+  "id": "junior-kokugo-vocabulary",
+  "title": "中学受験国語 vocabulary cards",
+  "options": {
+    "study_purpose": "junior_exam",
+    "guide_profile": "junior_exam.standard4",
+    "strategy_version": "junior-exam-v1",
+    "source_mode": "materials_notes",
+    "deck_name": "小5国語語句",
+    "requested_card_count": 4,
+    "language": "ja",
+    "user_tags": ["eval", "chugaku-juken", "kokugo"],
+    "exam_subject": "kokugo",
+    "exam_stage": "grade5",
+    "max_front_length": 120,
+    "max_back_length": 220
+  },
+  "source": {
+    "name": "kokugo-vocab-note",
+    "filename": "kokugo-vocab-note.txt",
+    "text": "語句メモ：ためらう＝すぐに決めたり行動したりできず迷うこと。例：発表する前に少しためらう。見当をつける＝だいたいの予想をすること。例：文章全体を読んで答えの見当をつける。国語では意味だけでなく、文中でどう使われるかを覚える。"
+  },
+  "expected_card_count": {"minimum": 3, "maximum": 5},
+  "expected_tags": ["chugaku-juken", "kokugo", "materials"],
+  "max_front_length": 120,
+  "max_back_length": 220,
+  "domain_checks": [
+    "basic_schema",
+    "count_range",
+    "length",
+    "front_back_distinct",
+    "duplicate_cards",
+    "source_ref",
+    "expected_tags",
+    "source_grounding"
+  ],
+  "rubric_notes": [
+    "Create short memory cards for meaning and usage.",
+    "Avoid literary analysis that is absent from the source."
+  ]
+}

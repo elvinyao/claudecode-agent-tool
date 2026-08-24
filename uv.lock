@@ -13,17 +13,20 @@ resolution-markers = [
 [manifest]
 members = [
     "agent-core",
+    "ankify-agent",
     "trivy-ai-report",
 ]
 
 [manifest.dependency-groups]
 dev = [
     { name = "agent-core", extras = ["all"], editable = "packages/agent-core" },
+    { name = "ankify-agent", editable = "plugins/ankify" },
     { name = "beautifulsoup4", specifier = ">=4.12,<5" },
     { name = "pytest", specifier = ">=8.3,<9" },
     { name = "pytest-asyncio", specifier = ">=0.25,<1" },
     { name = "pytest-cov", specifier = ">=6,<7" },
     { name = "ruff", specifier = ">=0.11,<1" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2,<3" },
     { name = "trivy-ai-report", editable = "plugins/trivy-ai-report" },
 ]
 
@@ -70,6 +73,36 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.28,<1" },
 ]
 provides-extras = ["codex", "claude", "web", "all"]
+
+[[package]]
+name = "ankify-agent"
+version = "0.1.0"
+source = { editable = "plugins/ankify" }
+dependencies = [
+    { name = "agent-core" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "agent-core", extra = ["all"] },
+]
+claude = [
+    { name = "agent-core", extra = ["claude"] },
+]
+codex = [
+    { name = "agent-core", extra = ["codex"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-core", editable = "packages/agent-core" },
+    { name = "agent-core", extras = ["all"], marker = "extra == 'all'", editable = "packages/agent-core" },
+    { name = "agent-core", extras = ["claude"], marker = "extra == 'claude'", editable = "packages/agent-core" },
+    { name = "agent-core", extras = ["codex"], marker = "extra == 'codex'", editable = "packages/agent-core" },
+    { name = "pydantic", specifier = ">=2.10,<3" },
+]
+provides-extras = ["codex", "claude", "all"]
 
 [[package]]
 name = "annotated-doc"

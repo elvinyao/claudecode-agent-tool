@@ -1,0 +1,42 @@
+{
+  "id": "junior-sansuu-mistake",
+  "title": "中学受験算数 mistake review",
+  "options": {
+    "study_purpose": "junior_exam",
+    "guide_profile": "junior_exam.standard4",
+    "strategy_version": "junior-exam-v1",
+    "source_mode": "mistakes_explanations",
+    "deck_name": "小5算数つまずき",
+    "requested_card_count": 5,
+    "language": "ja",
+    "user_tags": ["eval", "chugaku-juken", "sansuu"],
+    "exam_subject": "sansuu",
+    "exam_stage": "grade5",
+    "max_front_length": 120,
+    "max_back_length": 240
+  },
+  "source": {
+    "name": "sansuu-mistake-note",
+    "filename": "sansuu-mistake-note.txt",
+    "text": "問題：ある本を全体の3/5読みました。残りは何分のいくつですか。子どもの答え：3/5。正解：2/5。つまずき：問題文の「残り」を見落とした。考え方：全体を1=5/5と見て、5/5-3/5=2/5。次からは、何を聞かれているかに線を引く。"
+  },
+  "expected_card_count": {"minimum": 4, "maximum": 6},
+  "expected_tags": ["chugaku-juken", "sansuu", "mistake-review"],
+  "max_front_length": 120,
+  "max_back_length": 240,
+  "domain_checks": [
+    "basic_schema",
+    "count_range",
+    "length",
+    "front_back_distinct",
+    "duplicate_cards",
+    "source_ref",
+    "expected_tags",
+    "source_grounding",
+    "junior_math_strategy"
+  ],
+  "rubric_notes": [
+    "Capture the condition, why 1 becomes 5/5, the common mistake, and the next action.",
+    "Do not write a long full solution in one card."
+  ]
+}

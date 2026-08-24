@@ -1,0 +1,42 @@
+{
+  "id": "junior-shakai-causality",
+  "title": "中学受験社会 causality cards",
+  "options": {
+    "study_purpose": "junior_exam",
+    "guide_profile": "junior_exam.standard4",
+    "strategy_version": "junior-exam-v1",
+    "source_mode": "materials_notes",
+    "deck_name": "小6社会因果",
+    "requested_card_count": 5,
+    "language": "ja",
+    "user_tags": ["eval", "chugaku-juken", "shakai"],
+    "exam_subject": "shakai",
+    "exam_stage": "grade6",
+    "max_front_length": 130,
+    "max_back_length": 240
+  },
+  "source": {
+    "name": "shakai-causality-note",
+    "filename": "shakai-causality-note.txt",
+    "text": "歴史メモ：鎌倉幕府では御恩と奉公の関係が重要。御恩とは将軍が御家人に領地を認めたり新しい領地を与えたりすること。奉公とは御家人が戦いのときに将軍のために働くこと。この関係により、将軍と御家人の結びつきが強まった。"
+  },
+  "expected_card_count": {"minimum": 4, "maximum": 6},
+  "expected_tags": ["chugaku-juken", "shakai", "materials"],
+  "max_front_length": 130,
+  "max_back_length": 240,
+  "domain_checks": [
+    "basic_schema",
+    "count_range",
+    "length",
+    "front_back_distinct",
+    "duplicate_cards",
+    "source_ref",
+    "expected_tags",
+    "source_grounding",
+    "social_causality"
+  ],
+  "rubric_notes": [
+    "Preserve the relationship between cause and result.",
+    "Do not merge the terms 御恩 and 奉公 into a vague single summary."
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "id": "language-jlpt-vocabulary",
+  "title": "JLPT N4 vocabulary cards",
+  "options": {
+    "study_purpose": "language",
+    "guide_profile": "language.general",
+    "strategy_version": "language-v1",
+    "source_mode": "materials_notes",
+    "deck_name": "JLPT N4 語彙",
+    "requested_card_count": 5,
+    "language": "ja+zh",
+    "user_tags": ["eval", "language", "jlpt-n4"],
+    "learning_language": "ja",
+    "native_language": "zh",
+    "target_exam": "jlpt_n4",
+    "language_task": "vocabulary",
+    "translation_direction": "learning_to_native",
+    "max_front_length": 120,
+    "max_back_length": 220
+  },
+  "source": {
+    "name": "jlpt-vocab-note",
+    "filename": "jlpt-vocab-note.txt",
+    "text": "語彙メモ：相談する＝困ったことや決めたいことについて人に意見を聞く。例文：進路について先生に相談する。準備する＝必要なものや予定を前もって整える。例文：旅行の準備をする。比べる＝二つ以上のものを見て違いや同じ点を考える。例文：二つの答えを比べる。"
+  },
+  "expected_card_count": {"minimum": 3, "maximum": 6},
+  "expected_tags": ["language", "jlpt-n4", "vocabulary"],
+  "max_front_length": 120,
+  "max_back_length": 220,
+  "domain_checks": [
+    "basic_schema",
+    "count_range",
+    "length",
+    "front_back_distinct",
+    "duplicate_cards",
+    "source_ref",
+    "expected_tags",
+    "source_grounding"
+  ],
+  "rubric_notes": [
+    "Meanings should be concise in Chinese or simple Japanese.",
+    "Separate meaning, usage, and example points instead of merging all vocabulary into one card."
+  ]
+}

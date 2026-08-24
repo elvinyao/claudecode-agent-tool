@@ -1,0 +1,45 @@
+{
+  "id": "language-translation-bidirectional",
+  "title": "Bidirectional translation practice",
+  "options": {
+    "study_purpose": "language",
+    "guide_profile": "language.general",
+    "strategy_version": "language-v1",
+    "source_mode": "materials_notes",
+    "deck_name": "翻訳練習",
+    "requested_card_count": 4,
+    "language": "en+zh",
+    "user_tags": ["eval", "language", "translation"],
+    "learning_language": "en",
+    "native_language": "zh",
+    "target_exam": "none",
+    "language_task": "translation_practice",
+    "translation_direction": "bidirectional",
+    "max_front_length": 150,
+    "max_back_length": 220
+  },
+  "source": {
+    "name": "translation-note",
+    "filename": "translation-note.txt",
+    "text": "Translation practice phrases: Could you explain this part again? / I am not sure which answer is correct. / 这个句子是什么意思？ / 我想用英语更自然地表达这个想法。Keep each practice item short and useful for classroom or self-study situations."
+  },
+  "expected_card_count": {"minimum": 4, "maximum": 6},
+  "expected_tags": ["language", "translation-practice", "bidirectional"],
+  "max_front_length": 150,
+  "max_back_length": 220,
+  "domain_checks": [
+    "basic_schema",
+    "count_range",
+    "length",
+    "front_back_distinct",
+    "duplicate_cards",
+    "source_ref",
+    "expected_tags",
+    "source_grounding",
+    "translation_direction"
+  ],
+  "rubric_notes": [
+    "There should be evidence of both English-to-Chinese and Chinese-to-English practice.",
+    "Each card should ask for one short phrase or sentence."
+  ]
+}

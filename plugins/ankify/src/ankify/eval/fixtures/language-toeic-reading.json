@@ -1,0 +1,44 @@
+{
+  "id": "language-toeic-reading",
+  "title": "TOEIC reading material cards",
+  "options": {
+    "study_purpose": "language",
+    "guide_profile": "language.general",
+    "strategy_version": "language-v1",
+    "source_mode": "materials_notes",
+    "deck_name": "TOEIC Reading",
+    "requested_card_count": 5,
+    "language": "en+zh",
+    "user_tags": ["eval", "language", "toeic"],
+    "learning_language": "en",
+    "native_language": "zh",
+    "target_exam": "toeic",
+    "language_task": "listening_reading",
+    "translation_direction": "learning_to_native",
+    "max_front_length": 160,
+    "max_back_length": 240
+  },
+  "source": {
+    "name": "toeic-reading-note",
+    "filename": "toeic-reading-note.txt",
+    "text": "Memo: The sales department will move to the fifth floor on Monday. Employees should pack personal items by Friday afternoon. The IT team will disconnect desktop computers at 6 p.m. Friday and reconnect them before Monday morning. Key phrase: by Friday afternoon means no later than Friday afternoon."
+  },
+  "expected_card_count": {"minimum": 4, "maximum": 6},
+  "expected_tags": ["language", "toeic", "listening-reading"],
+  "max_front_length": 160,
+  "max_back_length": 240,
+  "domain_checks": [
+    "basic_schema",
+    "count_range",
+    "length",
+    "front_back_distinct",
+    "duplicate_cards",
+    "source_ref",
+    "expected_tags",
+    "source_grounding"
+  ],
+  "rubric_notes": [
+    "Include main idea, detail, and paraphrase-style TOEIC reading points.",
+    "Avoid overly broad summary cards."
+  ]
+}
