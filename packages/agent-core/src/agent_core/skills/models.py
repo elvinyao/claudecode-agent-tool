@@ -58,9 +58,14 @@ CLAUDE_SKILL_LAYOUT = SkillLayout(
     provider="claude",
     relative_root=PurePosixPath(".claude/skills"),
 )
+ANTIGRAVITY_SKILL_LAYOUT = SkillLayout(
+    provider="antigravity",
+    relative_root=PurePosixPath(".agents/skills"),
+)
 
 
 __all__ = [
+    "ANTIGRAVITY_SKILL_LAYOUT",
     "CLAUDE_SKILL_LAYOUT",
     "CODEX_SKILL_LAYOUT",
     "SkillError",

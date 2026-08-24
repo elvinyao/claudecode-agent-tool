@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 
 import pytest
 from pydantic import ConfigDict
@@ -19,11 +20,21 @@ class LiveOutput(StrictFrozenModel):
 
 @pytest.mark.live
 @pytest.mark.skipif(not LIVE, reason="set RUN_LIVE_AGENT_TESTS=1 to enable paid live calls")
-@pytest.mark.parametrize("provider_name", ["codex", "claude"])
+@pytest.mark.parametrize("provider_name", ["antigravity", "codex", "claude"])
 @pytest.mark.asyncio
 async def test_live_generic_structured_provider_smoke(provider_name: str) -> None:
-    if provider_name == "claude" and not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.skip("ANTHROPIC_API_KEY is not configured")
+    if (
+        provider_name == "claude"
+        and not os.environ.get("ANTHROPIC_API_KEY")
+        and shutil.which("claude") is None
+    ):
+        pytest.skip("neither a local Claude CLI nor ANTHROPIC_API_KEY is configured")
+    if (
+        provider_name == "antigravity"
+        and not os.environ.get("GEMINI_API_KEY")
+        and shutil.which("agy") is None
+    ):
+        pytest.skip("neither a local agy CLI nor GEMINI_API_KEY is configured")
     provider = create_provider(provider_name)
     request = AgentRequest[LiveOutput](
         request_id=f"live-{provider_name}",

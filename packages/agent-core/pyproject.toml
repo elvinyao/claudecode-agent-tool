@@ -13,6 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+antigravity = ["google-antigravity>=0.1.13,<0.2"]
 codex = ["openai-codex>=0.144.4,<1"]
 claude = ["claude-agent-sdk>=0.2.130,<1"]
 web = [
@@ -21,6 +22,7 @@ web = [
   "uvicorn>=0.28,<1",
 ]
 all = [
+  "google-antigravity>=0.1.13,<0.2",
   "openai-codex>=0.144.4,<1",
   "claude-agent-sdk>=0.2.130,<1",
   "fastapi>=0.110,<1",

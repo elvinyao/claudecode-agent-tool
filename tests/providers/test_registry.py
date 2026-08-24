@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent_core.providers import (
+    AntigravityProvider,
     ClaudeProvider,
     CodexProvider,
     ProviderConfigurationError,
@@ -12,12 +13,16 @@ from agent_core.providers import (
 
 
 def test_builtin_registry_is_lazy_and_normalizes_names() -> None:
+    assert isinstance(create_provider("antigravity"), AntigravityProvider)
     assert isinstance(create_provider(" CODEX "), CodexProvider)
     assert isinstance(create_provider("claude", model="model-x"), ClaudeProvider)
 
 
 def test_builtin_registry_rejects_unknown_provider() -> None:
-    with pytest.raises(ProviderConfigurationError, match="claude, codex"):
+    with pytest.raises(
+        ProviderConfigurationError,
+        match="antigravity, claude, codex",
+    ):
         create_provider("unknown")
 
 

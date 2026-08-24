@@ -13,6 +13,7 @@ from agent_core.skills.loader import (
     validate_skill_tree,
 )
 from agent_core.skills.models import (
+    ANTIGRAVITY_SKILL_LAYOUT,
     CLAUDE_SKILL_LAYOUT,
     CODEX_SKILL_LAYOUT,
     SkillLayout,
@@ -22,6 +23,7 @@ from agent_core.skills.models import (
 )
 
 DEFAULT_SKILL_LAYOUTS: dict[str, SkillLayout] = {
+    ANTIGRAVITY_SKILL_LAYOUT.provider: ANTIGRAVITY_SKILL_LAYOUT,
     CODEX_SKILL_LAYOUT.provider: CODEX_SKILL_LAYOUT,
     CLAUDE_SKILL_LAYOUT.provider: CLAUDE_SKILL_LAYOUT,
 }

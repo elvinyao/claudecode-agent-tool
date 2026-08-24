@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from agent_core.skills import (
+    ANTIGRAVITY_SKILL_LAYOUT,
     CLAUDE_SKILL_LAYOUT,
     CODEX_SKILL_LAYOUT,
     SkillStagingError,
@@ -38,6 +39,11 @@ def test_load_and_stage_provider_specific_layouts(tmp_path: Path) -> None:
 
     codex_path = stage_skill(spec, tmp_path / "codex", CODEX_SKILL_LAYOUT)
     claude_path = stage_skill(spec, tmp_path / "claude", CLAUDE_SKILL_LAYOUT)
+    antigravity_path = stage_skill(
+        spec,
+        tmp_path / "antigravity",
+        ANTIGRAVITY_SKILL_LAYOUT,
+    )
 
     assert spec.name == "demo-skill"
     assert spec.description == "Provide read-only demo guidance."
@@ -46,6 +52,9 @@ def test_load_and_stage_provider_specific_layouts(tmp_path: Path) -> None:
     )
     assert claude_path.relative_to(tmp_path / "claude").as_posix() == (
         ".claude/skills/demo-skill/SKILL.md"
+    )
+    assert antigravity_path.relative_to(tmp_path / "antigravity").as_posix() == (
+        ".agents/skills/demo-skill/SKILL.md"
     )
     assert (codex_path.parent / "references/policy.md").read_text(encoding="utf-8") == (
         "Use supported versions.\n"

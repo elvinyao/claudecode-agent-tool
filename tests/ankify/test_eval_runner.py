@@ -11,6 +11,7 @@ from agent_core.providers import ProviderCapabilities, ProviderRegistry
 from agent_core.providers.base import BaseProvider
 from agent_core.registry import PluginRegistry
 from agent_core.runtime import AgentRuntime
+from ankify.eval.cli import build_parser as build_eval_parser
 from ankify.eval.cli import main as eval_main
 from ankify.eval.fixture_loader import load_eval_fixtures
 from ankify.eval.models import (
@@ -243,3 +244,17 @@ def test_cli_local_mode_without_provider_writes_skipped_report(tmp_path: Path) -
     assert code == 0
     assert len(tuple(tmp_path.glob("*.json"))) == 1
     assert len(tuple(tmp_path.glob("*.md"))) == 1
+
+
+def test_eval_cli_accepts_antigravity_for_generation_and_judge() -> None:
+    args = build_eval_parser().parse_args(
+        [
+            "--generation-provider",
+            "antigravity",
+            "--judge-provider",
+            "antigravity",
+        ]
+    )
+
+    assert args.generation_provider == "antigravity"
+    assert args.judge_provider == "antigravity"

@@ -18,7 +18,7 @@
 - `oldplan.md` 描述旧 Next.js Ankify 的中学受验引导、质量标记和审核体验。
 - `oldplan2.md` 描述旧 TypeScript LLM Eval Harness、七个固定 fixture 和评分方式。
 
-当前实现使用 Python、Pydantic、agent-core Workflow 和 Codex/Claude Provider，不保留旧程序对 OpenAI/Gemini SDK、Next.js API、sql.js 或 TypeScript 类型的直接依赖。
+当前实现使用 Python、Pydantic、agent-core Workflow 和 Codex/Claude/Antigravity Provider，不保留旧程序对 OpenAI/Gemini SDK、Next.js API、sql.js 或 TypeScript 类型的直接依赖。
 
 ## 2. 核心设计原则
 

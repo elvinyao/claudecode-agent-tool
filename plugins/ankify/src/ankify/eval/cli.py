@@ -24,9 +24,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run bundled Ankify fixtures through the real AgentRuntime path.",
     )
     parser.add_argument("--mode", choices=("local", "strict"), default="local")
-    parser.add_argument("--generation-provider", choices=("codex", "claude"))
+    parser.add_argument(
+        "--generation-provider",
+        choices=("antigravity", "codex", "claude"),
+    )
     parser.add_argument("--generation-model")
-    parser.add_argument("--judge-provider", choices=("codex", "claude"))
+    parser.add_argument(
+        "--judge-provider",
+        choices=("antigravity", "codex", "claude"),
+    )
     parser.add_argument("--judge-model")
     parser.add_argument(
         "--fixture",

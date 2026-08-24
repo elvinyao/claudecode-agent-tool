@@ -37,6 +37,12 @@ def request(*, web: bool = False) -> AgentRequest[DemoOutput]:
     )
 
 
+@pytest.fixture(autouse=True)
+def no_local_provider_executables(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_module, "resolve_local_executable", lambda *args: None)
+    monkeypatch.setattr(claude_module, "resolve_local_executable", lambda *args: None)
+
+
 @pytest.mark.asyncio
 async def test_codex_forwards_generic_contract_and_enforces_read_only(
     monkeypatch: pytest.MonkeyPatch,
@@ -74,12 +80,18 @@ async def test_codex_forwards_generic_contract_and_enforces_read_only(
         Sandbox=SimpleNamespace(read_only="read-only"),
     )
     monkeypatch.setattr(codex_module, "import_module", lambda name: sdk)
+    monkeypatch.setattr(
+        codex_module,
+        "resolve_local_executable",
+        lambda *args: Path("/opt/local/bin/codex"),
+    )
 
     result = await CodexProvider(model="codex-model").execute(request(web=True))
 
     assert result.output == DemoOutput(answer="codex")
     assert result.request_id == "adapter-test"
     assert result.model == "codex-model"
+    assert state["config"]["codex_bin"] == "/opt/local/bin/codex"
     assert state["config"]["config_overrides"] == ('web_search="live"',)
     assert state["thread"]["developer_instructions"].startswith("System instructions")
     assert state["thread"]["approval_mode"] == "deny-all"
@@ -226,6 +238,11 @@ async def test_claude_exposes_only_explicit_safe_tools_and_closes_stream(
         query=query,
     )
     monkeypatch.setattr(claude_module, "import_module", lambda name: sdk)
+    monkeypatch.setattr(
+        claude_module,
+        "resolve_local_executable",
+        lambda *args: Path("/opt/local/bin/claude"),
+    )
 
     result = await ClaudeProvider(model="claude-model").execute(request(web=True))
 
@@ -239,7 +256,9 @@ async def test_claude_exposes_only_explicit_safe_tools_and_closes_stream(
     assert options["permission_mode"] == "dontAsk"
     assert options["mcp_servers"] == {}
     assert options["strict_mcp_config"] is True
-    assert options["setting_sources"] == []
+    assert options["cli_path"] == "/opt/local/bin/claude"
+    assert "setting_sources" not in options
+    assert options["env"] == {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
     assert options["output_format"]["schema"]["properties"]["answer"]
     assert state["stream_closed"] is True
     assert Path(options["cwd"]).exists() is False
@@ -388,6 +407,6 @@ async def test_claude_stages_and_enables_only_selected_skill(
     assert state["options"]["tools"] == ["Skill"]
     assert state["options"]["allowed_tools"] == ["Skill"]
     assert state["options"]["skills"] == ["adapter-skill"]
-    assert state["options"]["setting_sources"] == ["project"]
+    assert state["options"]["setting_sources"] == ["user", "project", "local"]
     assert state["staged_exists"] is True
     assert state["staged"].exists() is False

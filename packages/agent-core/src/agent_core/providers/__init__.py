@@ -1,5 +1,6 @@
-"""Domain-neutral Codex and Claude provider adapters."""
+"""Domain-neutral Antigravity, Claude, and Codex provider adapters."""
 
+from agent_core.providers.antigravity import AntigravityProvider
 from agent_core.providers.base import BaseProvider, ProviderAdapter
 from agent_core.providers.capabilities import ProviderCapabilities
 from agent_core.providers.claude import ClaudeProvider
@@ -25,6 +26,7 @@ from agent_core.providers.registry import (
 
 __all__ = [
     "DEFAULT_PROVIDER_REGISTRY",
+    "AntigravityProvider",
     "BaseProvider",
     "ClaudeProvider",
     "CodexProvider",

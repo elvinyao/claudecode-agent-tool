@@ -12,6 +12,7 @@ from agent_core.contracts import AgentRequest, ProviderResult
 from agent_core.providers.base import BaseProvider, OutputT
 from agent_core.providers.capabilities import ProviderCapabilities
 from agent_core.providers.errors import ProviderUnavailableError
+from agent_core.providers.local_runtime import resolve_local_executable
 from agent_core.providers.structured import validate_structured_output
 from agent_core.skills import CLAUDE_SKILL_LAYOUT, stage_skill
 
@@ -65,27 +66,32 @@ class ClaudeProvider(BaseProvider):
             cwd_path = Path(cwd)
             for skill in self.skills:
                 stage_skill(skill, cwd_path, CLAUDE_SKILL_LAYOUT)
-            config_dir = cwd_path / ".claude-config"
-            config_dir.mkdir()
-            options = sdk.ClaudeAgentOptions(
-                allowed_tools=active_tools,
-                cwd=cwd,
-                env={
-                    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
-                    "CLAUDE_CONFIG_DIR": str(config_dir),
-                },
-                mcp_servers={},
-                model=self._requested_model,
-                output_format={
+            option_values: dict[str, Any] = {
+                "allowed_tools": active_tools,
+                "cwd": cwd,
+                "env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"},
+                "mcp_servers": {},
+                "model": self._requested_model,
+                "output_format": {
                     "type": "json_schema",
                     "schema": request.response_model.model_json_schema(),
                 },
-                permission_mode="dontAsk",
-                setting_sources=["project"] if self.skills else [],
-                skills=[skill.name for skill in self.skills],
-                strict_mcp_config=True,
-                system_prompt=request.system_prompt,
-                tools=active_tools,
+                "permission_mode": "dontAsk",
+                "skills": [skill.name for skill in self.skills],
+                "strict_mcp_config": True,
+                "system_prompt": request.system_prompt,
+                "tools": active_tools,
+            }
+            # Omitting setting_sources lets Claude reuse the local user's
+            # configured authentication/settings. The isolated cwd prevents
+            # unrelated repository settings from entering the request.
+            if self.skills:
+                option_values["setting_sources"] = ["user", "project", "local"]
+            local_claude = resolve_local_executable(self.name, ("claude",))
+            if local_claude is not None:
+                option_values["cli_path"] = str(local_claude)
+            options = sdk.ClaudeAgentOptions(
+                **option_values,
             )
             stream = sdk.query(prompt=prompt, options=options)
             try:

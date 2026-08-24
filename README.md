@@ -1,7 +1,7 @@
 # agent-core：确定性程序 + 本地 AI Agent 通用框架
 
 `agent-core` 用来构建这样的工具：**能确定的步骤由 Python 程序完成，需要推理的步骤才交给
-Codex 或 Claude**。程序拥有输入解析、事实、校验、重试策略、fallback、最终工件和副作用权限；
+Codex、Claude 或 Antigravity**。程序拥有输入解析、事实、校验、重试策略、fallback、最终工件和副作用权限；
 模型只处理一个边界明确、返回值可验证的推理任务。
 
 仓库当前包含：
@@ -13,13 +13,13 @@ Codex 或 Claude**。程序拥有输入解析、事实、校验、重试策略�
 - 一个完全不依赖 Trivy 的 Toy 插件 fixture，用来证明 Core 可以复用于 Linter Fixer、FinOps
   Optimizer、K8s Log Analyzer 等其他领域。
 
-当前内置 Provider 是 `codex` 和 `claude`。当前 Core Plugin API 是 `1.0`。
+当前内置 Provider 是 `codex`、`claude` 和 `antigravity`。当前 Core Plugin API 是 `1.0`。
 
 > 这个项目不是一个“把整个任务丢给聊天机器人”的包装器。它更接近一个有类型、有审计、
 > 有权限边界的工作流运行时。AI 输出始终是不可信候选值，必须经过程序校验后才能进入最终结果。
 
 “本地优先”指工作流运行时、插件、Skill staging、输入处理和工件发布由你的机器控制，不代表
-模型推理离线。Codex/Claude SDK 通常会把受限 prompt 发送给相应服务，可能产生费用并受账号、
+模型推理离线。三个 Provider 通常会把受限 prompt 发送给相应服务，可能产生费用并受账号、
 网络和服务可用性影响。Trivy 插件会尽量减少进入模型的数据，具体字段见
 [哪些数据会发给模型](#哪些数据会发给模型)。
 
@@ -83,7 +83,7 @@ Codex 或 Claude**。程序拥有输入解析、事实、校验、重试策略�
 
 - Python `3.10+`；CI 当前验证 Python `3.10` 和 `3.12`。
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)；源码仓库推荐使用它管理环境。
-- 至少一个已配置凭据的 Provider：Codex 或 Claude。
+- 至少一个已配置凭据的 Provider：Codex、Claude 或 Antigravity。
 - 只有扫描自己的镜像时才需要 Trivy；运行仓库自带示例不需要安装 Trivy。
 
 本文的多行 shell 示例默认使用 macOS/Linux 的 Bash/Zsh。Windows PowerShell 的命令名和参数相同，
@@ -121,7 +121,7 @@ trivy   0.2.0    1.0  Trivy AI Remediation Report
 
 如果列表中没有 `trivy`，先不要继续运行，查看[用户排障](#用户排障)。
 
-### 2. 配置 Codex 或 Claude
+### 2. 配置 Provider
 
 #### Codex
 
@@ -142,12 +142,11 @@ uv run python -c "import openai_codex; print('openai-codex SDK: OK')"
 需要理解两个不同的组件：
 
 - `PATH` 中的 `codex` CLI 适合登录、查看状态和交互使用。
-- `agent-core[codex]` 安装的是 `openai-codex` Python SDK。该 SDK 默认使用与 SDK 匹配的
-  bundled/pinned Codex runtime，而不保证使用 `PATH` 中的可执行文件。
+- `agent-core[codex]` 安装的是 `openai-codex` Python SDK。adapter 会优先把 `PATH` 中的本机
+  `codex` 传给 SDK；找不到时才使用 SDK bundled/pinned runtime。
 
 两者默认复用 Codex 的本地登录状态，例如 `~/.codex`。因此 `codex login status` 成功是必要的
-排查步骤，但“系统里安装过 Codex CLI”不等于当前 Python 环境已经安装 `agent-core[codex]`；
-反过来，升级 `PATH` 中的 CLI 也不等于升级 Python SDK 使用的 runtime。
+排查步骤，但“系统里安装过 Codex CLI”不等于当前 Python 环境已经安装 `agent-core[codex]`。
 
 可以查看当前环境中的两个 Python 包版本：
 
@@ -171,6 +170,43 @@ uv run python -c "import claude_agent_sdk; print('claude-agent-sdk: OK')"
 
 不要把 key 写进仓库、`--options-json`、URL query、报告或测试 fixture。SDK 不会因为仓库里存在
 `.env` 就由本项目自动加载它。Claude.ai/Claude Code 订阅也不应被假定为这个 SDK 的 API 额度。
+
+如果本机已经安装并登录 Claude Code，adapter 会优先使用 `PATH` 中的 `claude`，并复用本机
+用户设置；找不到时才回退到 `claude-agent-sdk` bundled CLI。无论使用哪条路径，工具 allowlist、
+临时 cwd、无 MCP 配置和 structured output 仍由 adapter 显式设置。
+
+#### Antigravity
+
+先安装并登录 Antigravity CLI：
+
+```bash
+agy
+```
+
+adapter 优先使用 `PATH` 中的 `agy` headless mode，因此可以复用本机 keyring 登录、模型和用户
+设置；执行仍固定在隔离临时 cwd，并强制 `--sandbox` 和 JSON Schema 输出。没有本机 CLI 时，
+安装 Python SDK fallback：
+
+```bash
+pip install 'agent-core[antigravity]'
+python -c "import google.antigravity; print('google-antigravity SDK: OK')"
+```
+
+SDK fallback 使用 `GEMINI_API_KEY` 或 SDK 官方支持的 Vertex/ADC 环境配置，并显式关闭 subagent、
+MCP、custom tools 与写工具。相关官方文档：[Antigravity CLI 安装](https://antigravity.google/docs/cli/install/)、
+[Headless mode](https://antigravity.google/docs/cli/headless/)、
+[Python SDK](https://antigravity.google/docs/sdk/overview)。
+
+三个 Provider 都支持显式覆盖本机 executable；值必须是可执行文件的绝对路径：
+
+```text
+AGENT_CORE_CODEX_BIN
+AGENT_CORE_CLAUDE_BIN
+AGENT_CORE_ANTIGRAVITY_BIN
+```
+
+解析顺序固定为“环境变量覆盖 → `PATH` 中的官方命令 → SDK bundled runtime”。显式覆盖无效时
+会 fail closed，不会悄悄换成另一个 binary。
 
 ### 3. 运行仓库自带 Trivy 示例
 
@@ -321,7 +357,7 @@ agent-core run
 | 参数 | 含义 | 当前默认值/注意事项 |
 | --- | --- | --- |
 | `--plugin` | 已安装的领域插件 ID | 用 `plugins list` 查看 |
-| `--provider` | Provider 名称 | Core 当前只有 `codex`、`claude` |
+| `--provider` | Provider 名称 | `codex`、`claude`、`antigravity` |
 | `--input` | 一个本地普通文件 | CLI 不接受目录；内容由插件解析 |
 | `--output` | 最终工件路径 | 默认不覆盖；父目录可自动创建 |
 | `--model` | 覆盖 Provider 默认模型 | 不传时可能在报告中显示 `provider-default` |
@@ -399,7 +435,7 @@ CLI 例子：
 flowchart LR
     I["TrivyWorkflowInput"] --> P["parse\n严格解析和归一化"]
     P --> B["plan\n稳定分批和 AgentRequest"]
-    B --> A["analyze\nCodex 或 Claude"]
+    B --> A["analyze\nCodex / Claude / Antigravity"]
     P --> M["merge\n事实 + 建议 + fallback"]
     A --> M
     M --> R["render\nJinja2 HTML"]
@@ -615,10 +651,12 @@ uv run agent-core run --help
 # 3. Provider Python SDK 是否安装在同一个 uv 环境
 uv run python -c "import openai_codex; print('codex sdk ok')"
 uv run python -c "import claude_agent_sdk; print('claude sdk ok')"
+uv run python -c "import google.antigravity; print('antigravity sdk fallback ok')"
 
 # 4. 认证是否存在
 codex login status
 test -n "$ANTHROPIC_API_KEY" && echo 'Claude key configured'
+agy -p "Reply with ok" --output-format json
 
 # 5. 用仓库内有 finding 的最小输入重试
 uv run agent-core run \
@@ -638,7 +676,8 @@ echo $?
 - `plugins list` 没有 `trivy`：运行命令的 Python 环境没有安装 Trivy 插件；在仓库中重新执行
   `uv sync --locked --all-extras`。
 - `provider_unavailable`：登录通常不是第一问题，先确认相应 Python SDK extra 已安装。
-- `provider_authentication`：Codex 检查 `codex login status`；Claude 检查 `ANTHROPIC_API_KEY`。
+- `provider_authentication`：Codex 检查 `codex login status`；Claude 检查本机登录或
+  `ANTHROPIC_API_KEY`；Antigravity 检查 `agy` 登录或 SDK fallback 凭据。
 - `provider_configuration`：通常是模型名、SDK 兼容性或 structured-output schema 问题。它不是账号
   密码错误；如果 Trivy 已 fallback，CLI 会返回 `3`。
 - `output already exists`：换输出名或确认后使用 `--force`；框架故意不静默覆盖。
@@ -661,7 +700,7 @@ echo $?
 │       ├── workflow.py        # 类型化 DAG、重试、deadline、Action gate
 │       ├── registry.py        # 领域插件 entry-point discovery
 │       ├── runtime.py         # 每次 run 的装配与结果归一化
-│       ├── providers/         # Codex / Claude adapter 和 typed errors
+│       ├── providers/         # Codex / Claude / Antigravity adapter 和 typed errors
 │       ├── skills/            # Skill 校验与隔离 staging
 │       ├── audit.py           # metadata-only 审计
 │       ├── cli.py             # 本地文件 transport / composition root
@@ -732,8 +771,9 @@ flowchart TB
     end
 
     subgraph Provider["Optional provider boundary"]
-        CODEX["openai-codex SDK\npinned runtime"]
-        CLAUDE["claude-agent-sdk"]
+        CODEX["local codex → openai-codex fallback"]
+        CLAUDE["local claude → SDK fallback"]
+        AGY["local agy → Python SDK fallback"]
     end
 
     CLI --> REG
@@ -749,6 +789,7 @@ flowchart TB
     DAG --> Plugin
     PR --> CODEX
     PR --> CLAUDE
+    PR --> AGY
 ```
 
 ### 各层负责什么
@@ -971,7 +1012,7 @@ uv sync --locked --all-extras
 uv run agent-core plugins list
 ```
 
-`uv sync --locked` 保证使用已提交 lockfile；`--all-extras` 安装 Codex、Claude、Web 和 Trivy 插件
+`uv sync --locked` 保证使用已提交 lockfile；`--all-extras` 安装 Codex、Claude、Antigravity、Web 和插件
 开发所需依赖。只想使用已发布包时可以按需选择 extra，但这个仓库无法保证包已经发布到你的
 Python index：
 
@@ -1041,7 +1082,15 @@ RUN_LIVE_AGENT_TESTS=1 \
 uv run pytest tests/providers/test_live_adapters.py -k claude -vv -s
 ```
 
-Claude smoke 还要求 `ANTHROPIC_API_KEY`。Codex smoke 使用本机 Codex 登录状态。不要在普通 CI 或
+Antigravity：
+
+```bash
+RUN_LIVE_AGENT_TESTS=1 \
+uv run pytest tests/providers/test_live_adapters.py -k antigravity -vv -s
+```
+
+Claude smoke 还要求本机登录或 `ANTHROPIC_API_KEY`；Antigravity 需要已登录 `agy` 或
+`GEMINI_API_KEY`；Codex smoke 使用本机 Codex 登录状态。不要在普通 CI 或
 外部贡献者 PR 上默认启用 live tests。
 
 ### 构建和 wheel smoke
@@ -1359,6 +1408,7 @@ Loader 限制：最多 128 个 regular files、单文件最大 512 KiB、总计�
 
 - Codex：`.agents/skills/<name>/SKILL.md`
 - Claude：`.claude/skills/<name>/SKILL.md`
+- Antigravity：`.agents/skills/<name>/SKILL.md`
 
 临时目录在成功、异常和取消后都会清理。Skill 不能扩大 `ToolPolicy`，也不能把 read-only 请求变成
 写操作。
@@ -1369,7 +1419,8 @@ Loader 限制：最多 128 个 regular files、单文件最大 512 KiB、总计�
 
 1. **CLI/entry point**：`uv run agent-core plugins list`。
 2. **可选依赖**：确认 Provider SDK 能在同一 uv 环境 import。
-3. **认证**：Codex `codex login status`；Claude 检查 `ANTHROPIC_API_KEY` 是否存在但不要打印值。
+3. **认证**：Codex `codex login status`；Claude 检查本机登录/API key；Antigravity 检查
+   `agy` headless 登录或 SDK fallback 凭据。不要打印任何 key。
 4. **最小输入**：先跑仓库自带有 finding 的示例。
 5. **退出码和 warning**：区分 complete 与 degraded。
 6. **audit**：按 run/request ID 查看错误类型、阶段、耗时和 hash。
@@ -1385,9 +1436,9 @@ Loader 限制：最多 128 个 regular files、单文件最大 512 KiB、总计�
 | --- | --- | --- |
 | `plugins list` 没有 `trivy` | 插件未安装到同一 Python 环境或 entry point 失败 | 重新 `uv sync --locked --all-extras` |
 | `unknown plugin` | `--plugin` 不在启动时 registry | 查看 `plugins list` 和安装环境 |
-| `unknown provider` | 名称不在 ProviderRegistry | 当前 stock CLI 只支持 `codex`、`claude` |
+| `unknown provider` | 名称不在 ProviderRegistry | stock CLI 支持 `codex`、`claude`、`antigravity` |
 | `provider_unavailable` | 可选 SDK/runtime 未安装或 API 不兼容 | 安装对应 extra；在同一环境测试 import |
-| `provider_authentication` | 登录或 API key 缺失/失效 | Codex login status；Claude key |
+| `provider_authentication` | 登录或 API key 缺失/失效 | 检查对应本机 CLI 登录或 SDK fallback 凭据 |
 | `provider_permission` | 账号、workspace、模型权限不足 | 检查账号和模型授权 |
 | `provider_configuration` | schema、模型名或 adapter 配置错误 | 先跑 schema test；核对 SDK/runtime 版本 |
 | `provider_capability` | 插件请求了 Provider/run policy 不允许的能力 | 检查 Web/Skill/tool policy |
@@ -1467,6 +1518,8 @@ tail -n 100 "$HOME/Library/Application Support/agent_core/audit.jsonl" \
 - **Codex**：ephemeral thread、临时 cwd、read-only sandbox、deny-all approval；Web 搜索默认关闭。
 - **Claude**：无 MCP server、`permission_mode=dontAsk`；只在需要时开放 `Skill`、`WebSearch`、
   `WebFetch`，不开放 Shell 或文件写工具。
+- **Antigravity**：本机 `agy` 在隔离临时 cwd 中使用 headless schema 和 `--sandbox`；SDK fallback
+  显式关闭 subagent/MCP/custom tools，只开放 finish 和按需 Web 工具。
 - **结构化输出**：SDK schema、Codex preflight、Pydantic、Workflow 类型和领域 guardrail 多层校验。
 - **Skill**：严格文件树校验，再复制到隔离 workspace；不能覆盖 tool policy。
 - **Action**：框架只对 terminal `ActionNode` 做 action-mode admission、gating 和 audit；可信插件作者
@@ -1481,14 +1534,15 @@ tail -n 100 "$HOME/Library/Application Support/agent_core/audit.jsonl" \
 - 不要把开发服务器直接暴露在互联网。
 - 不要把模型建议自动当成安全补丁；重新扫描并运行构建、测试和业务验证。
 - `apply` 是高权限操作，只有经过专门 threat model、审计和幂等设计的插件才应实现。
-- Provider 的临时 workspace 不是用户项目目录；模型只会看到插件显式写入 prompt 和已选择 Skill
-  的内容。不要把“read-only workspace”误解成模型可以读取整个仓库。
+- Provider 的临时 workspace 不是用户项目目录；模型不会因此获得当前仓库内容。开启本机 CLI
+  优先时仍会读取对应 CLI 的用户级登录、设置或全局指令，因此这些本机配置也必须视为可信输入。
+  不要把“read-only workspace”误解成模型可以读取整个仓库。
 - HTTPS source/sink 的精确 allowlist 只约束 Web transport I/O；Agent 自身的 WebSearch/WebFetch
   当前是独立的布尔 capability，不共享这份域名 allowlist。
 
 ## 当前限制与设计选择
 
-- v1 stock Provider 只有 Codex 和 Claude；Gemini 尚未内置。
+- stock Provider 包含 Codex、Claude 和 Antigravity。
 - Provider 不使用 entry point 自动发现，需要显式 composition。
 - 一次 run 最多选择一个 Skill。
 - 同名 Provider 在单进程/event loop 中默认串行。

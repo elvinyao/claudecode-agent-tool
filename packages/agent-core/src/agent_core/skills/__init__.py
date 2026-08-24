@@ -7,6 +7,7 @@ from agent_core.skills.loader import (
     load_skill,
 )
 from agent_core.skills.models import (
+    ANTIGRAVITY_SKILL_LAYOUT,
     CLAUDE_SKILL_LAYOUT,
     CODEX_SKILL_LAYOUT,
     SkillError,
@@ -19,6 +20,7 @@ from agent_core.skills.models import (
 from agent_core.skills.staging import DEFAULT_SKILL_LAYOUTS, materialize_skill, stage_skill
 
 __all__ = [
+    "ANTIGRAVITY_SKILL_LAYOUT",
     "CLAUDE_SKILL_LAYOUT",
     "CODEX_SKILL_LAYOUT",
     "DEFAULT_SKILL_LAYOUTS",

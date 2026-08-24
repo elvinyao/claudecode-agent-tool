@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 
+from agent_core.providers.antigravity import AntigravityProvider
 from agent_core.providers.base import BaseProvider
 from agent_core.providers.claude import ClaudeProvider
 from agent_core.providers.codex import CodexProvider
@@ -58,6 +59,7 @@ class ProviderRegistry:
 
 
 DEFAULT_PROVIDER_REGISTRY = ProviderRegistry()
+DEFAULT_PROVIDER_REGISTRY.register("antigravity", AntigravityProvider)
 DEFAULT_PROVIDER_REGISTRY.register("codex", CodexProvider)
 DEFAULT_PROVIDER_REGISTRY.register("claude", ClaudeProvider)
 

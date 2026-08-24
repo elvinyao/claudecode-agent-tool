@@ -44,7 +44,16 @@ def test_base_core_metadata_keeps_optional_transports_and_sdks_out() -> None:
         project = tomllib.load(stream)["project"]
 
     assert project["dependencies"] == ["pydantic>=2.10,<3"]
-    assert set(project["optional-dependencies"]) == {"codex", "claude", "web", "all"}
+    assert set(project["optional-dependencies"]) == {
+        "antigravity",
+        "codex",
+        "claude",
+        "web",
+        "all",
+    }
+    assert project["optional-dependencies"]["antigravity"] == [
+        "google-antigravity>=0.1.13,<0.2"
+    ]
     assert project["optional-dependencies"]["codex"] == [
         "openai-codex>=0.144.4,<1"
     ]

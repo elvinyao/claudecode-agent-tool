@@ -12,6 +12,7 @@ from agent_core.providers.base import BaseProvider, OutputT
 from agent_core.providers.capabilities import ProviderCapabilities
 from agent_core.providers.codex_schema import validate_codex_output_schema
 from agent_core.providers.errors import ProviderUnavailableError
+from agent_core.providers.local_runtime import resolve_local_executable
 from agent_core.providers.structured import validate_structured_output
 from agent_core.skills import CODEX_SKILL_LAYOUT, stage_skill
 
@@ -70,9 +71,15 @@ class CodexProvider(BaseProvider):
                     skill_inputs.append(SkillInput(skill.name, str(staged)))
                 run_input = [*skill_inputs, TextInput(request.prompt)]
 
+            config_options: dict[str, Any] = {
+                "cwd": cwd,
+                "config_overrides": (f'web_search="{web_mode}"',),
+            }
+            local_codex = resolve_local_executable(self.name, ("codex",))
+            if local_codex is not None:
+                config_options["codex_bin"] = str(local_codex)
             config = sdk.CodexConfig(
-                cwd=cwd,
-                config_overrides=(f'web_search="{web_mode}"',),
+                **config_options,
             )
             async with sdk.AsyncCodex(config=config) as codex:
                 thread = await codex.thread_start(

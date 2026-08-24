@@ -3,8 +3,9 @@
 Evidence-grounded Anki Basic-card generation plugin for `agent-core`.
 
 The plugin keeps source identity, strategy selection, validation, stable note IDs,
-quality issues, and artifact publication in deterministic Python code. Codex or
-Claude only selects learning points and produces schema-constrained card candidates.
+quality issues, and artifact publication in deterministic Python code. Codex,
+Claude, or Antigravity only selects learning points and produces schema-constrained
+card candidates.
 
 The authoritative requirements, implementation steps, and actual test ledger live
 in [`docs/implementation-guide.md`](docs/implementation-guide.md).
