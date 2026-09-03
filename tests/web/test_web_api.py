@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from threading import Event
 from typing import Any
 
 import pytest
@@ -11,6 +13,7 @@ from pydantic import BaseModel, ValidationError
 
 from agent_core.io import HttpsIoError, HttpsIoPolicy, PublishReceipt
 from agent_core.jobs import JobContext, JobExecutionResult, RunArtifact
+from agent_core.uploads import InMemoryUploadStore
 from agent_core.web import ResolvedRunRequest, WebSettings, create_app
 
 
@@ -52,7 +55,7 @@ async def echo_executor(
     context.raise_if_cancelled()
     assert request.plugin_id == "demo"
     assert request.provider == "codex"
-    assert request.input_filename in {"input.json", "input"}
+    assert request.input_filename in {"input.json", "input", "notes.md", "input.txt"}
     return JobExecutionResult(
         artifact=RunArtifact(
             request.input_bytes,
@@ -301,6 +304,12 @@ def test_request_body_limit_returns_413_before_executor() -> None:
 def test_non_loopback_bind_requires_bearer_token_and_auth_is_constant_shape() -> None:
     with pytest.raises(ValidationError, match="bearer API token"):
         WebSettings(host="0.0.0.0")
+    with pytest.raises(ValidationError, match="input size limit"):
+        WebSettings(
+            max_upload_bytes=5,
+            max_upload_total_bytes=10,
+            https_policy=HttpsIoPolicy(max_input_bytes=4),
+        )
 
     settings = WebSettings(host="0.0.0.0", api_token="very-secret-token")
     app = create_app(
@@ -450,3 +459,237 @@ def test_cancel_endpoint_cancels_a_running_job() -> None:
     assert cancelled.status_code == 202
     assert cancelled.json()["cancellation_requested"] is True
     assert terminal["status"] == "cancelled"
+
+
+def test_upload_source_list_and_explicit_rerun_lineage() -> None:
+    app = create_app(
+        registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor
+    )
+
+    with TestClient(app) as client:
+        uploaded = client.post(
+            "/api/v1/uploads",
+            files={"file": ("notes.md", b"# source\n", "text/markdown")},
+        )
+        assert uploaded.status_code == 201
+        upload = uploaded.json()
+        assert upload["filename"] == "notes.md"
+        assert upload["media_type"] == "text/markdown"
+        assert upload["size_bytes"] == len(b"# source\n")
+        assert len(upload["sha256"]) == 64
+
+        spec = {
+            "plugin_id": "demo",
+            "provider": "codex",
+            "source": {"type": "upload", "upload_id": upload["upload_id"]},
+            "sink": {"type": "artifact"},
+        }
+        submitted = client.post("/api/v1/runs", json=spec)
+        assert submitted.status_code == 202
+        parent_id = submitted.json()["run_id"]
+        parent = wait_for_terminal(client, parent_id)
+        assert parent["input_filename"] == "notes.md"
+        assert parent["input_media_type"] == "text/markdown"
+        assert parent["input_sha256"] == upload["sha256"]
+
+        listing = client.get("/api/v1/runs", params={"plugin_id": "demo"})
+        assert listing.status_code == 200
+        assert listing.json()["count"] == 1
+        assert listing.json()["runs"][0]["run_id"] == parent_id
+
+        rerun = client.post(f"/api/v1/runs/{parent_id}/rerun", json=spec)
+        assert rerun.status_code == 202
+        child_id = rerun.json()["run_id"]
+        child = wait_for_terminal(client, child_id)
+        assert child_id != parent_id
+        assert child["parent_run_id"] == parent_id
+
+        children = client.get("/api/v1/runs", params={"parent_run_id": parent_id})
+        assert children.json()["count"] == 1
+        assert children.json()["runs"][0]["run_id"] == child_id
+
+        artifact = client.get(child["artifact_url"])
+        assert artifact.content == b"# source\n"
+
+
+def test_upload_limits_unknown_upload_and_filename_sanitization() -> None:
+    settings = WebSettings(
+        max_request_bytes=1024,
+        max_upload_bytes=4,
+        max_upload_total_bytes=8,
+    )
+    app = create_app(
+        registry=DemoRegistry(),
+        provider_names=("codex",),
+        run_executor=echo_executor,
+        settings=settings,
+    )
+
+    with TestClient(app) as client:
+        sanitized = client.post(
+            "/api/v1/uploads",
+            files={"file": ("../x.md", b"1234", "text/markdown")},
+        )
+        too_large = client.post(
+            "/api/v1/uploads",
+            files={"file": ("big.txt", b"12345", "text/plain")},
+        )
+        missing = client.post(
+            "/api/v1/runs",
+            json={
+                "plugin_id": "demo",
+                "provider": "codex",
+                "source": {"type": "upload", "upload_id": "0" * 32},
+            },
+        )
+
+    assert sanitized.status_code == 201
+    assert sanitized.json()["filename"] == "x.md"
+    assert too_large.status_code == 413
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Upload not found"
+
+
+def test_accepted_upload_is_snapshotted_while_waiting_in_queue() -> None:
+    now = datetime(2026, 8, 29, tzinfo=timezone.utc)
+
+    def clock() -> datetime:
+        return now
+
+    blocker_started = Event()
+    release_blocker = Event()
+
+    async def executor(
+        request: ResolvedRunRequest,
+        context: JobContext,
+    ) -> JobExecutionResult:
+        if request.input_filename == "input.json":
+            blocker_started.set()
+            await asyncio.to_thread(release_blocker.wait)
+        context.raise_if_cancelled()
+        return JobExecutionResult(
+            artifact=RunArtifact(request.input_bytes, media_type="text/plain")
+        )
+
+    upload_store = InMemoryUploadStore(ttl_seconds=1, clock=clock)
+    app = create_app(
+        registry=DemoRegistry(),
+        provider_names=("codex",),
+        run_executor=executor,
+        upload_store=upload_store,
+        settings=WebSettings(worker_count=1),
+    )
+
+    with TestClient(app) as client:
+        blocker = client.post(
+            "/api/v1/runs",
+            json={
+                "plugin_id": "demo",
+                "provider": "codex",
+                "source": {"type": "inline", "data": {}},
+            },
+        )
+        assert blocker.status_code == 202
+        assert blocker_started.wait(timeout=1)
+
+        uploaded = client.post(
+            "/api/v1/uploads",
+            files={"file": ("notes.md", b"retained", "text/markdown")},
+        ).json()
+        spec = {
+            "plugin_id": "demo",
+            "provider": "codex",
+            "source": {"type": "upload", "upload_id": uploaded["upload_id"]},
+        }
+        queued = client.post("/api/v1/runs", json=spec)
+        assert queued.status_code == 202
+
+        now += timedelta(seconds=2)
+        assert client.post("/api/v1/runs", json=spec).status_code == 404
+        release_blocker.set()
+        completed = wait_for_terminal(client, queued.json()["run_id"])
+        artifact = client.get(completed["artifact_url"])
+
+    assert completed["status"] == "succeeded"
+    assert artifact.content == b"retained"
+
+
+def test_sse_replays_safe_lifecycle_events_and_resumes_from_cursor() -> None:
+    app = create_app(
+        registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor
+    )
+
+    with TestClient(app) as client:
+        submitted = client.post(
+            "/api/v1/runs",
+            json={
+                "plugin_id": "demo",
+                "provider": "codex",
+                "source": {"type": "text", "text": "DO-NOT-ECHO", "filename": "input.txt"},
+            },
+        )
+        run_id = submitted.json()["run_id"]
+        wait_for_terminal(client, run_id)
+
+        stream = client.get(f"/api/v1/runs/{run_id}/events")
+        resumed = client.get(
+            f"/api/v1/runs/{run_id}/events",
+            headers={"Last-Event-ID": "2"},
+        )
+        terminal_only = client.get(
+            f"/api/v1/runs/{run_id}/events",
+            headers={"Last-Event-ID": "3"},
+        )
+        invalid = client.get(
+            f"/api/v1/runs/{run_id}/events",
+            headers={"Last-Event-ID": "invalid"},
+        )
+
+    assert stream.status_code == 200
+    assert stream.headers["content-type"].startswith("text/event-stream")
+    assert "event: run.queued" in stream.text
+    assert "event: run.started" in stream.text
+    assert "event: artifact.created" in stream.text
+    assert "event: run.completed" in stream.text
+    assert "DO-NOT-ECHO" not in stream.text
+    assert "id: 1" not in resumed.text
+    assert "id: 2" not in resumed.text
+    assert "id: 3" in resumed.text
+    assert "event: artifact.created" not in terminal_only.text
+    assert "event: run.completed" in terminal_only.text
+    assert '"artifact_available":true' in terminal_only.text
+    assert invalid.status_code == 400
+
+
+def test_rerun_requires_terminal_parent_and_same_plugin() -> None:
+    started = asyncio.Event()
+
+    async def slow_executor(
+        request: ResolvedRunRequest,
+        context: JobContext,
+    ) -> JobExecutionResult:
+        started.set()
+        await asyncio.Event().wait()
+        return JobExecutionResult(artifact=RunArtifact(b"never"))
+
+    app = create_app(
+        registry=DemoRegistry(), provider_names=("codex",), run_executor=slow_executor
+    )
+    spec = {
+        "plugin_id": "demo",
+        "provider": "codex",
+        "source": {"type": "inline", "data": {}},
+    }
+
+    with TestClient(app) as client:
+        parent = client.post("/api/v1/runs", json=spec)
+        parent_id = parent.json()["run_id"]
+        for _ in range(100):
+            if client.get(f"/api/v1/runs/{parent_id}").json()["status"] == "running":
+                break
+            time.sleep(0.005)
+        rerun = client.post(f"/api/v1/runs/{parent_id}/rerun", json=spec)
+        client.post(f"/api/v1/runs/{parent_id}/cancel")
+
+    assert rerun.status_code == 409
+    assert rerun.json()["detail"] == "Only a terminal run can be rerun"

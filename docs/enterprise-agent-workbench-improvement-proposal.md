@@ -28,6 +28,21 @@
   → 历史、比较、复用和自动化
 ```
 
+### 1.1 当前落地状态（2026-09-04）
+
+第一批运行控制面已经实现：
+
+- `agent-core doctor` 离线检查 Plugin 与 Provider CLI/SDK；
+- 安全的 `RunMetadata`、任务列表与 parent/child lineage；
+- provider-neutral run-level `RunEvent`、bounded replay 和 SSE；
+- inline text 与有界 TTL multipart upload；
+- 显式 spec rerun，并重新执行全部 admission policy；
+- 可替换的 `JobManager` 与 `UploadStore` protocol。
+
+本批默认存储仍是单进程内存实现。SQLite/filesystem、跨进程 queue、不可变 RunSpec、Approval、
+RunDraft、任务型聊天和 Web App 属于后续批次；在 durable backend 合入前，不应把当前实现描述为
+生产级持久化。
+
 ## 2. 当前项目基础与缺口
 
 ### 2.1 已有能力
@@ -45,14 +60,15 @@
 
 ### 2.2 主要产品缺口
 
-Web 目前只是提交、轮询、取消和下载 Artifact 的 Job API，没有任务列表、事件流、对话、审批或恢复：
-[web.py](../packages/agent-core/src/agent_core/web.py#L556)。
+Web 第一批已经增加任务列表、parent lineage、SSE、上传和显式重跑，但仍没有任务型 UI、对话、
+审批、checkpoint/resume 或 durable backend：
+[web.py](../packages/agent-core/src/agent_core/web.py)。
 
 JobManager 还是单进程内存实现，重启后运行历史和 Artifact 会消失：
 [jobs.py](../packages/agent-core/src/agent_core/jobs.py#L1)。
 
 好消息是，Plugin 已经暴露 input/options/output JSON Schema，可以直接用于生成通用表单和结果
-Viewer：[web.py](../packages/agent-core/src/agent_core/web.py#L147)。
+Viewer：[web.py](../packages/agent-core/src/agent_core/web.py#L235)。
 
 Ankify 已经在设计文档中明确了“程序事实、AI 候选、人工意见、副作用”的所有权边界：
 [implementation-guide.md](../plugins/ankify/docs/implementation-guide.md#L25)。这套边界应该从文档约定升级为机器可读的产品契约。
@@ -137,19 +153,17 @@ RunDraft 应包含：
 
 ### 4.3 补齐上传入口
 
-目前 Web source 只有 inline JSON 和 HTTPS URL：
-[web.py](../packages/agent-core/src/agent_core/web.py#L53)。工作台至少需要：
+第一批已支持 inline JSON、inline text、HTTPS 和带 TTL 的单文件 upload reference：
+[web.py](../packages/agent-core/src/agent_core/web.py)。完整工作台后续还需要：
 
-- 粘贴文本；
-- Markdown、PDF、图片、JSON 上传；
-- multipart upload；
-- 多附件；
+- 多附件和 attachment set；
+- PDF/图片的解析与预览；
 - 上传后的 Artifact/Blob ID；
 - filename 和 media type 保真；
 - TTL、大小限制和 ownership；
 - 后续 Google Drive、GitHub、Jira 等 Connector source。
 
-上传内容应进入独立 ArtifactStore，而不是直接塞入 Run record。
+上传内容应进入独立 UploadStore/ArtifactStore，而不是长期保留在 Run record。
 
 ### 4.4 RunEvent + SSE 实时事件流
 
@@ -172,6 +186,9 @@ usage.updated
 run.completed
 run.failed
 ```
+
+第一批已经实现 run-level 和 `artifact.created` 事件；step、batch、candidate、validation、usage 与
+approval 事件需要在 Workflow/Provider callback contract 完成后继续接入。
 
 UI 应显示：
 

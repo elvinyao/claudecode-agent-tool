@@ -110,6 +110,8 @@ Web 示例在 PowerShell 中建议显式使用 `curl.exe`，避免旧版 PowerSh
 ```bash
 uv sync --locked --all-extras
 uv run agent-core plugins list
+uv run agent-core plugins describe ankify --json
+uv run agent-core doctor
 ```
 
 正常情况下会看到：
@@ -171,9 +173,9 @@ uv run python -c "import claude_agent_sdk; print('claude-agent-sdk: OK')"
 不要把 key 写进仓库、`--options-json`、URL query、报告或测试 fixture。SDK 不会因为仓库里存在
 `.env` 就由本项目自动加载它。Claude.ai/Claude Code 订阅也不应被假定为这个 SDK 的 API 额度。
 
-如果本机已经安装并登录 Claude Code，adapter 会优先使用 `PATH` 中的 `claude`，并复用本机
-用户设置；找不到时才回退到 `claude-agent-sdk` bundled CLI。无论使用哪条路径，工具 allowlist、
-临时 cwd、无 MCP 配置和 structured output 仍由 adapter 显式设置。
+`agent-core[claude]` 的 Python SDK 始终是必要条件。在 SDK 已安装的前提下，adapter 会优先使用
+`PATH` 中的本机 `claude` 并复用用户设置；找不到时使用 SDK bundled CLI。无论使用哪条路径，
+工具 allowlist、临时 cwd、无 MCP 配置和 structured output 仍由 adapter 显式设置。
 
 #### Antigravity
 
@@ -480,7 +482,7 @@ curl -sS http://127.0.0.1:8000/api/v1/plugins
 `/readyz` 只检查至少有一个插件 descriptor、Provider 名称和已启动的 job manager；它不会登录
 Provider，也不会发送网络请求。因此 ready 不代表账号、模型或 SDK 一定可调用。
 
-### 提交、轮询和下载
+### 上传、提交、事件和下载
 
 默认 loopback 且没有设置 token 时，不要发送一个空的 `Authorization: Bearer` header：
 
@@ -535,6 +537,42 @@ curl -sS -X POST http://127.0.0.1:8000/api/v1/runs/RUN_ID/cancel
 取消会通过 Workflow 传到 Provider SDK，并释放并发许可。它是协作式取消，不应被理解成对所有
 第三方网络操作的瞬间强杀保证。
 
+工作文件可先用 multipart 上传；响应中的 `upload_id` 可以在 TTL 内被多个 run spec 引用：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/v1/uploads \
+  -F 'file=@notes.md;type=text/markdown'
+```
+
+```json
+{"type":"upload","upload_id":"UPLOAD_ID"}
+```
+
+任务列表支持 `status`、`plugin_id`、`provider`、`parent_run_id` 和 `limit` 过滤：
+
+```bash
+curl -sS 'http://127.0.0.1:8000/api/v1/runs?status=failed&limit=20'
+```
+
+工作台可用 SSE 读取有序、可恢复的安全事件流；断线重连时使用 `Last-Event-ID`：
+
+```bash
+curl -N http://127.0.0.1:8000/api/v1/runs/RUN_ID/events
+curl -N -H 'Last-Event-ID: 2' http://127.0.0.1:8000/api/v1/runs/RUN_ID/events
+```
+
+事件目前覆盖 queued、started、cancel requested、artifact created 和 terminal 状态，只包含状态、
+错误码、warning 数量和 Artifact 元数据，不包含 prompt、原始输入、签名 URL 或 chain-of-thought。
+
+显式重跑会创建带 `parent_run_id` 的新 run。请求 body 必须重新提供完整 run spec，并重新通过当前
+Plugin、Provider、Web、Action 和 HTTPS policy；服务不会为“一键重跑”长期保留敏感原请求：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/api/v1/runs/PARENT_RUN_ID/rerun \
+  -H 'Content-Type: application/json' \
+  -d @run-spec.json
+```
+
 ### API 请求契约
 
 所有 API model 都拒绝未知字段。CLI 和 Web options 的层级不同：
@@ -544,7 +582,7 @@ curl -sS -X POST http://127.0.0.1:8000/api/v1/runs/RUN_ID/cancel
 - Web 的 `options.enrich_web` 是经过服务器 policy 检查的专用字段。Trivy 的同名 option 会由
   composition root 注入，不能藏进 `parameters` 绕过服务端权限。
 
-`source` 只能二选一：
+`source` 是严格的 discriminated union，支持 inline JSON、inline text、上传引用或 HTTPS：
 
 ```json
 {"type":"inline","data":{"SchemaVersion":2,"ArtifactName":"x","ArtifactType":"container_image","Results":[]}}
@@ -552,6 +590,14 @@ curl -sS -X POST http://127.0.0.1:8000/api/v1/runs/RUN_ID/cancel
 
 ```json
 {"type":"https","url":"https://artifacts.example.com/input/trivy.json"}
+```
+
+```json
+{"type":"text","text":"source notes","filename":"notes.md","media_type":"text/markdown"}
+```
+
+```json
+{"type":"upload","upload_id":"0123456789abcdef0123456789abcdef"}
 ```
 
 `inline.data` 必须是 JSON object，不接受任意数组或本地路径。`sink` 只能是：
@@ -570,15 +616,17 @@ HTTPS source 和 sink 都必须在服务启动时加入精确 `host:port` allowl
 任务完成后的 artifact 仍会暂存在当前进程内，可在 TTL 到期前下载。
 
 状态响应包含：`run_id`、创建/开始/结束时间、`cancellation_requested`、`partial`、`warnings`、
-`error {code,message}`、`artifact_available` 和 `artifact_url`。
+`error {code,message}`、`artifact_available`、`artifact_url`，以及经过白名单限制的 Plugin、Provider、
+model、输入文件名/media type/SHA-256 和 parent lineage 元数据。
 
 | HTTP 状态 | 常见含义 |
 | ---: | --- |
+| `201` | 上传已保存并返回可引用的 `upload_id` |
 | `202` | 任务已接收或取消请求已接收 |
 | `401` | 服务配置了 token，但 bearer 缺失或错误 |
 | `403` | 请求的 Web enrichment 或 action mode 超过服务器权限 |
 | `404` | 插件、Provider 或 run 不存在 |
-| `409` | 工件还未准备好 |
+| `409` | 工件未准备好，或 parent run 尚未结束/插件不匹配 |
 | `413` | 请求 body 超过上限 |
 | `422` | 请求 JSON/schema 错误，或同步 HTTPS admission policy 不通过 |
 | `503` | queue/run store 满，或 readiness 不满足；容量错误带 `Retry-After` |
@@ -617,6 +665,9 @@ HTTPS transport 只允许 `https`、精确 allowlist、无 userinfo/fragment/red
 | --- | ---: |
 | HTTP request body | 10 MiB |
 | inline/HTTPS input | 10 MiB |
+| 单个 multipart upload | 8 MiB |
+| upload store 总量 | 100 MiB / 128 个 |
+| upload TTL | 3600 秒 |
 | output/artifact | 20 MiB |
 | queue capacity | 16 |
 | job workers | 2 |
@@ -630,7 +681,8 @@ HTTPS transport 只允许 `https`、精确 allowlist、无 userinfo/fragment/red
 CLI 只暴露最常用的 Web policy 开关。要修改 queue、TTL、大小或 transport timeout，需要在 Python
 composition root 中构造 `WebSettings`/`HttpsIoPolicy` 并调用 `create_app(...)`。
 
-内置 JobManager 是有界的**单进程内存实现**：
+Web composition root 现在通过 `JobManager` 和 `UploadStore` protocol 接受替代实现；默认后端仍是
+有界的**单进程内存实现**：
 
 - 重启进程会丢失 queue、run 状态和 artifact。
 - terminal run 默认完成一小时后过期。
@@ -642,8 +694,9 @@ composition root 中构造 `WebSettings`/`HttpsIoPolicy` 并调用 `create_app(.
 第一次遇到问题时，按下面顺序排查，不要一开始就修改 prompt：
 
 ```bash
-# 1. 当前环境是否能发现插件
-uv run agent-core plugins list
+# 1. 离线检查插件发现与三个 Provider 的 CLI/SDK
+uv run agent-core doctor
+uv run agent-core doctor --provider codex --json
 
 # 2. CLI 参数是否和当前版本一致
 uv run agent-core run --help
@@ -670,6 +723,9 @@ uv run agent-core run \
 # 6. 必须在 run 命令后立刻读取
 echo $?
 ```
+
+Doctor 不会调用 Provider、登录账号或探测网络，也不会输出凭据和完整可执行文件路径；它用于区分
+插件缺失、SDK/CLI 缺失和显式 runtime 路径配置错误。真实认证与模型连通性仍需 smoke task 验证。
 
 常见判断：
 
@@ -750,7 +806,7 @@ Core 不知道 CVE、Trivy finding、整改建议或 HTML 模板。所有领域�
 flowchart TB
     subgraph Transport["Transport / Composition"]
         CLI["Generic CLI\n本地文件 + 原子发布"]
-        WEB["FastAPI Job API\nAdmission + bounded jobs"]
+        WEB["FastAPI Control Plane\nUpload + admission + jobs + SSE"]
     end
 
     subgraph Core["agent_core"]
@@ -771,8 +827,8 @@ flowchart TB
     end
 
     subgraph Provider["Optional provider boundary"]
-        CODEX["local codex → openai-codex fallback"]
-        CLAUDE["local claude → SDK fallback"]
+        CODEX["openai-codex SDK\nlocal or bundled codex"]
+        CLAUDE["claude-agent-sdk\nlocal or bundled claude"]
         AGY["local agy → Python SDK fallback"]
     end
 

@@ -19,6 +19,7 @@ claude = ["claude-agent-sdk>=0.2.130,<1"]
 web = [
   "fastapi>=0.110,<1",
   "httpx>=0.27,<1",
+  "python-multipart>=0.0.20,<1",
   "uvicorn>=0.28,<1",
 ]
 all = [
@@ -27,6 +28,7 @@ all = [
   "claude-agent-sdk>=0.2.130,<1",
   "fastapi>=0.110,<1",
   "httpx>=0.27,<1",
+  "python-multipart>=0.0.20,<1",
   "uvicorn>=0.28,<1",
 ]
 

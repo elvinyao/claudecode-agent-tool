@@ -54,6 +54,7 @@ all = [
     { name = "google-antigravity" },
     { name = "httpx" },
     { name = "openai-codex" },
+    { name = "python-multipart" },
     { name = "uvicorn" },
 ]
 antigravity = [
@@ -68,6 +69,7 @@ codex = [
 web = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "python-multipart" },
     { name = "uvicorn" },
 ]
 
@@ -84,6 +86,8 @@ requires-dist = [
     { name = "openai-codex", marker = "extra == 'all'", specifier = ">=0.144.4,<1" },
     { name = "openai-codex", marker = "extra == 'codex'", specifier = ">=0.144.4,<1" },
     { name = "pydantic", specifier = ">=2.10,<3" },
+    { name = "python-multipart", marker = "extra == 'all'", specifier = ">=0.0.20,<1" },
+    { name = "python-multipart", marker = "extra == 'web'", specifier = ">=0.0.20,<1" },
     { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.28,<1" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.28,<1" },
 ]

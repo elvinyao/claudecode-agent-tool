@@ -2,19 +2,32 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import secrets
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from hashlib import sha256
 from ipaddress import ip_address
 from typing import Annotated, Any, Literal, Protocol
 from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -27,23 +40,45 @@ from pydantic import (
 from agent_core.contracts import ActionMode, RunStatus
 from agent_core.io import HttpsIoClient, HttpsIoError, HttpsIoPolicy, validate_https_url_syntax
 from agent_core.jobs import (
+    TERMINAL_STATES,
     ArtifactNotReadyError,
     InMemoryJobManager,
     JobContext,
     JobExecutionResult,
+    JobManager,
     JobQueueFullError,
+    RunEvent,
+    RunEventType,
+    RunMetadata,
     RunNotFoundError,
     RunSnapshot,
     RunStoreFullError,
 )
+from agent_core.uploads import (
+    InMemoryUploadStore,
+    UploadedArtifact,
+    UploadNotFoundError,
+    UploadSnapshot,
+    UploadStore,
+    UploadStoreFullError,
+    UploadTooLargeError,
+)
 
 _PLUGIN_ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 _PROVIDER_ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
+_UPLOAD_ID = re.compile(r"^[a-f0-9]{32}$")
 _ACTION_MODE_RANK = {
     ActionMode.DISABLED: 0,
     ActionMode.DRY_RUN: 1,
     ActionMode.APPLY: 2,
 }
+_TERMINAL_EVENT_TYPES = frozenset(
+    {
+        RunEventType.RUN_COMPLETED,
+        RunEventType.RUN_FAILED,
+        RunEventType.RUN_CANCELLED,
+    }
+)
 
 
 class _StrictApiModel(BaseModel):
@@ -53,6 +88,35 @@ class _StrictApiModel(BaseModel):
 class InlineJsonSource(_StrictApiModel):
     type: Literal["inline"] = "inline"
     data: dict[str, Any]
+
+
+class InlineTextSource(_StrictApiModel):
+    type: Literal["text"] = "text"
+    text: str = Field(max_length=10 * 1024 * 1024)
+    filename: str = Field(default="input.txt", min_length=1, max_length=255)
+    media_type: str = Field(default="text/plain; charset=utf-8", min_length=1, max_length=255)
+
+    @field_validator("filename")
+    @classmethod
+    def valid_filename(cls, value: str) -> str:
+        return _validate_input_filename(value)
+
+    @field_validator("media_type")
+    @classmethod
+    def valid_media_type(cls, value: str) -> str:
+        return _validate_media_type(value)
+
+
+class UploadedSource(_StrictApiModel):
+    type: Literal["upload"] = "upload"
+    upload_id: str
+
+    @field_validator("upload_id")
+    @classmethod
+    def valid_upload_id(cls, value: str) -> str:
+        if _UPLOAD_ID.fullmatch(value) is None:
+            raise ValueError("upload_id is invalid")
+        return value
 
 
 class HttpsSource(_StrictApiModel):
@@ -69,7 +133,10 @@ class HttpsSource(_StrictApiModel):
         return value
 
 
-RunSource = Annotated[InlineJsonSource | HttpsSource, Field(discriminator="type")]
+RunSource = Annotated[
+    InlineJsonSource | InlineTextSource | UploadedSource | HttpsSource,
+    Field(discriminator="type"),
+]
 
 
 class ArtifactSink(_StrictApiModel):
@@ -142,6 +209,28 @@ class RunStatusResponse(_StrictApiModel):
     error: dict[str, str] | None
     artifact_available: bool
     artifact_url: str | None
+    plugin_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    input_filename: str | None = None
+    input_media_type: str | None = None
+    input_sha256: str | None = None
+    parent_run_id: str | None = None
+
+
+class RunsResponse(_StrictApiModel):
+    runs: list[RunStatusResponse]
+    count: int
+
+
+class UploadResponse(_StrictApiModel):
+    upload_id: str
+    filename: str
+    media_type: str
+    size_bytes: int
+    sha256: str
+    created_at: str
+    expires_at: str
 
 
 class PluginSchemaResponse(_StrictApiModel):
@@ -179,6 +268,10 @@ class WebSettings(_StrictApiModel):
     worker_count: int = Field(default=2, ge=1, le=128)
     max_run_records: int = Field(default=256, ge=1, le=100_000)
     run_ttl_seconds: float = Field(default=3600.0, gt=0)
+    max_upload_records: int = Field(default=128, ge=1, le=100_000)
+    max_upload_bytes: int = Field(default=8 * 1024 * 1024, ge=1)
+    max_upload_total_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
+    upload_ttl_seconds: float = Field(default=3600.0, gt=0)
     max_action_mode: ActionMode = ActionMode.DISABLED
     allow_web_enrichment: bool = False
     https_policy: HttpsIoPolicy = Field(default_factory=HttpsIoPolicy)
@@ -189,6 +282,10 @@ class WebSettings(_StrictApiModel):
             raise ValueError("a bearer API token is required for a non-loopback bind")
         if self.api_token is not None and not self.api_token.get_secret_value():
             raise ValueError("api_token must not be empty")
+        if self.max_upload_bytes > self.max_upload_total_bytes:
+            raise ValueError("max_upload_bytes must not exceed max_upload_total_bytes")
+        if self.max_upload_bytes > self.https_policy.max_input_bytes:
+            raise ValueError("max_upload_bytes must not exceed the input size limit")
         return self
 
 
@@ -206,6 +303,14 @@ class ResolvedRunRequest:
     timeout_seconds: float
     action_mode: ActionMode
     parameters: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _AdmittedRunRequest:
+    """Queued request plus an immutable snapshot of an admitted upload."""
+
+    request: RunSubmitRequest
+    uploaded_artifact: UploadedArtifact | None = None
 
 
 class PluginRegistry(Protocol):
@@ -368,12 +473,93 @@ def _status_response(snapshot: RunSnapshot) -> RunStatusResponse:
             if snapshot.artifact_available
             else None
         ),
+        plugin_id=snapshot.metadata.plugin_id,
+        provider=snapshot.metadata.provider,
+        model=snapshot.metadata.model,
+        input_filename=snapshot.metadata.input_filename,
+        input_media_type=snapshot.metadata.input_media_type,
+        input_sha256=snapshot.metadata.input_sha256,
+        parent_run_id=snapshot.metadata.parent_run_id,
     )
+
+
+def _upload_response(snapshot: UploadSnapshot) -> UploadResponse:
+    return UploadResponse(
+        upload_id=snapshot.upload_id,
+        filename=snapshot.filename,
+        media_type=snapshot.media_type,
+        size_bytes=snapshot.size_bytes,
+        sha256=snapshot.sha256,
+        created_at=snapshot.created_at.isoformat(),
+        expires_at=snapshot.expires_at.isoformat(),
+    )
+
+
+def _validate_input_filename(value: str) -> str:
+    if value != value.strip() or value in {".", ".."}:
+        raise ValueError("filename must be non-empty and trimmed")
+    if "/" in value or "\\" in value or "\x00" in value or "\r" in value or "\n" in value:
+        raise ValueError("filename must not contain a path or control characters")
+    return value
+
+
+def _uploaded_filename(value: str | None) -> str:
+    candidate = (value or "upload.bin").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not candidate or candidate in {".", ".."}:
+        candidate = "upload.bin"
+    candidate = candidate.replace("\x00", "_").replace("\r", "_").replace("\n", "_")
+    if len(candidate) <= 255:
+        return candidate
+    stem, separator, suffix = candidate.rpartition(".")
+    if stem and separator and 0 < len(suffix) <= 32:
+        return f"{stem[: 254 - len(suffix)]}.{suffix}"
+    return candidate[:255]
+
+
+def _validate_media_type(value: str) -> str:
+    if value != value.strip() or "\x00" in value or "\r" in value or "\n" in value:
+        raise ValueError("media_type must be trimmed single-line text")
+    return value
 
 
 def _safe_filename(value: str) -> str:
     result = re.sub(r"[^A-Za-z0-9._-]", "_", value)[:128]
     return result or "artifact.bin"
+
+
+def _event_payload(event: RunEvent) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "run_id": event.run_id,
+        "sequence": event.sequence,
+        "type": event.type.value,
+        "occurred_at": event.occurred_at.isoformat(),
+        "status": event.status.value,
+        "partial": event.partial,
+        "warning_count": event.warning_count,
+        "artifact_available": event.artifact_available,
+    }
+    optional = {
+        "error_code": event.error_code,
+        "artifact_filename": event.artifact_filename,
+        "artifact_media_type": event.artifact_media_type,
+        "artifact_size_bytes": event.artifact_size_bytes,
+    }
+    payload.update({key: value for key, value in optional.items() if value is not None})
+    return payload
+
+
+def _sse_frame(event: RunEvent) -> str:
+    data = json.dumps(_event_payload(event), ensure_ascii=False, separators=(",", ":"))
+    return f"id: {event.sequence}\nevent: {event.type.value}\ndata: {data}\n\n"
+
+
+def _event_cursor(after: int, last_event_id: str | None) -> int:
+    if last_event_id is None:
+        return after
+    if len(last_event_id) > 20 or not last_event_id.isdecimal():
+        raise HTTPException(status_code=400, detail="Last-Event-ID must be a non-negative integer")
+    header_cursor = int(last_event_id)
+    return max(after, header_cursor)
 
 
 def create_app(
@@ -383,7 +569,8 @@ def create_app(
     run_executor: RunExecutor | None = None,
     settings: WebSettings | None = None,
     io_client: HttpsIoClient | None = None,
-    job_manager: InMemoryJobManager | None = None,
+    job_manager: JobManager | None = None,
+    upload_store: UploadStore | None = None,
     manage_job_lifecycle: bool = True,
     close_io_on_shutdown: bool | None = None,
 ) -> FastAPI:
@@ -394,19 +581,26 @@ def create_app(
     if any(_PROVIDER_ID.fullmatch(name) is None for name in normalized_providers):
         raise ValueError("provider_names contains an invalid provider identifier")
     effective_io = io_client or HttpsIoClient(effective_settings.https_policy)
+    effective_uploads = upload_store or InMemoryUploadStore(
+        max_records=effective_settings.max_upload_records,
+        max_upload_bytes=effective_settings.max_upload_bytes,
+        max_total_bytes=effective_settings.max_upload_total_bytes,
+        ttl_seconds=effective_settings.upload_ttl_seconds,
+    )
     owns_io = io_client is None if close_io_on_shutdown is None else close_io_on_shutdown
 
     if job_manager is None and run_executor is None:
         raise ValueError("run_executor is required when job_manager is not supplied")
 
     async def execute_submission(
-        payload: RunSubmitRequest,
+        payload: _AdmittedRunRequest,
         context: JobContext,
     ) -> JobExecutionResult:
         context.raise_if_cancelled()
-        if isinstance(payload.source, InlineJsonSource):
+        request = payload.request
+        if isinstance(request.source, InlineJsonSource):
             raw_input = json.dumps(
-                payload.source.data,
+                request.source.data,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -415,8 +609,23 @@ def create_app(
                 raise HttpsIoError("input_too_large", "Inline input exceeds the size limit")
             media_type = "application/json"
             filename = "input.json"
+        elif isinstance(request.source, InlineTextSource):
+            raw_input = request.source.text.encode("utf-8")
+            if len(raw_input) > effective_settings.https_policy.max_input_bytes:
+                raise HttpsIoError("input_too_large", "Inline input exceeds the size limit")
+            media_type = request.source.media_type
+            filename = request.source.filename
+        elif isinstance(request.source, UploadedSource):
+            uploaded = payload.uploaded_artifact
+            if uploaded is None or uploaded.upload_id != request.source.upload_id:
+                raise UploadNotFoundError("admitted upload snapshot is unavailable")
+            if uploaded.size_bytes > effective_settings.https_policy.max_input_bytes:
+                raise HttpsIoError("input_too_large", "Uploaded input exceeds the size limit")
+            raw_input = uploaded.content
+            media_type = uploaded.media_type
+            filename = uploaded.filename
         else:
-            source_url = payload.source.url.get_secret_value()
+            source_url = request.source.url.get_secret_value()
             raw_input = await effective_io.fetch(source_url)
             media_type = "application/json"
             filename = _safe_filename(urlsplit(source_url).path.rsplit("/", 1)[-1])
@@ -424,24 +633,24 @@ def create_app(
         if run_executor is None:  # protected by factory validation
             raise RuntimeError("run executor is unavailable")
         resolved = ResolvedRunRequest(
-            plugin_id=payload.plugin_id,
-            provider=payload.provider,
+            plugin_id=request.plugin_id,
+            provider=request.provider,
             input_bytes=raw_input,
             input_media_type=media_type,
             input_filename=filename,
-            model=payload.options.model,
-            enrich_web=payload.options.enrich_web,
-            timeout_seconds=payload.options.timeout_seconds,
-            action_mode=payload.options.action_mode,
-            parameters=dict(payload.options.parameters),
+            model=request.options.model,
+            enrich_web=request.options.enrich_web,
+            timeout_seconds=request.options.timeout_seconds,
+            action_mode=request.options.action_mode,
+            parameters=dict(request.options.parameters),
         )
         result = await run_executor(resolved, context)
         if not isinstance(result, JobExecutionResult):
             raise TypeError("run_executor must return JobExecutionResult")
         context.raise_if_cancelled()
-        if isinstance(payload.sink, HttpsPutSink):
+        if isinstance(request.sink, HttpsPutSink):
             await effective_io.publish(
-                payload.sink.url.get_secret_value(),
+                request.sink.url.get_secret_value(),
                 result.artifact.content,
                 media_type=result.artifact.media_type,
             )
@@ -482,6 +691,7 @@ def create_app(
     app.state.registry = registry
     app.state.job_manager = manager
     app.state.io_client = effective_io
+    app.state.upload_store = effective_uploads
 
     @app.exception_handler(RequestValidationError)
     async def sanitized_validation_error(
@@ -522,6 +732,104 @@ def create_app(
             )
 
     api_auth = Depends(authorize)
+
+    async def run_metadata(
+        request: RunSubmitRequest,
+        *,
+        parent_run_id: str | None,
+    ) -> tuple[RunMetadata, UploadedArtifact | None]:
+        source = request.source
+        input_sha256: str | None = None
+        upload_id: str | None = None
+        uploaded_artifact: UploadedArtifact | None = None
+        if isinstance(source, InlineJsonSource):
+            encoded = json.dumps(
+                source.data,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if len(encoded) > effective_settings.https_policy.max_input_bytes:
+                raise HttpsIoError("input_too_large", "Inline input exceeds the size limit")
+            filename = "input.json"
+            media_type = "application/json"
+            input_sha256 = sha256(encoded).hexdigest()
+        elif isinstance(source, InlineTextSource):
+            encoded = source.text.encode("utf-8")
+            if len(encoded) > effective_settings.https_policy.max_input_bytes:
+                raise HttpsIoError("input_too_large", "Inline input exceeds the size limit")
+            filename = source.filename
+            media_type = source.media_type
+            input_sha256 = sha256(encoded).hexdigest()
+        elif isinstance(source, UploadedSource):
+            uploaded = await effective_uploads.get(source.upload_id)
+            if uploaded.size_bytes > effective_settings.https_policy.max_input_bytes:
+                raise HttpsIoError("input_too_large", "Uploaded input exceeds the size limit")
+            uploaded_artifact = uploaded
+            filename = uploaded.filename
+            media_type = uploaded.media_type
+            input_sha256 = sha256(uploaded.content).hexdigest()
+            upload_id = uploaded.upload_id
+        else:
+            source_url = source.url.get_secret_value()
+            effective_io.validate_allowed_server(source_url)
+            filename = _safe_filename(urlsplit(source_url).path.rsplit("/", 1)[-1])
+            media_type = "application/json"
+        return (
+            RunMetadata(
+                plugin_id=request.plugin_id,
+                provider=request.provider,
+                model=request.options.model,
+                input_filename=filename,
+                input_media_type=media_type,
+                input_sha256=input_sha256,
+                source_upload_id=upload_id,
+                parent_run_id=parent_run_id,
+            ),
+            uploaded_artifact,
+        )
+
+    async def admit_and_submit(
+        request: RunSubmitRequest,
+        *,
+        parent_run_id: str | None = None,
+    ) -> RunSnapshot:
+        plugin_ids = {_plugin_id_of(item) for item in _registry_descriptors(registry)}
+        if request.plugin_id not in plugin_ids:
+            raise HTTPException(status_code=404, detail="Plugin not found")
+        if request.provider not in normalized_providers:
+            raise HTTPException(status_code=404, detail="Provider not found")
+        if (
+            _ACTION_MODE_RANK[request.options.action_mode]
+            > _ACTION_MODE_RANK[effective_settings.max_action_mode]
+        ):
+            raise HTTPException(status_code=403, detail="Requested action mode is not allowed")
+        if request.options.enrich_web and not effective_settings.allow_web_enrichment:
+            raise HTTPException(status_code=403, detail="Web enrichment is not allowed")
+        try:
+            metadata, uploaded_artifact = await run_metadata(
+                request,
+                parent_run_id=parent_run_id,
+            )
+            if isinstance(request.sink, HttpsPutSink):
+                effective_io.validate_allowed_server(request.sink.url.get_secret_value())
+            queued_payload: Any = request
+            if job_manager is None:
+                queued_payload = _AdmittedRunRequest(
+                    request=request,
+                    uploaded_artifact=uploaded_artifact,
+                )
+            return await manager.submit(queued_payload, metadata=metadata)
+        except UploadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Upload not found") from exc
+        except HttpsIoError as exc:
+            raise HTTPException(status_code=422, detail=exc.public_message) from exc
+        except (JobQueueFullError, RunStoreFullError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Run capacity is exhausted",
+                headers={"Retry-After": "1"},
+            ) from exc
 
     @app.get("/livez", response_model=HealthResponse)
     async def livez() -> HealthResponse:
@@ -583,39 +891,78 @@ def create_app(
         return _descriptor_schema(descriptor)
 
     @app.post(
+        "/api/v1/uploads",
+        response_model=UploadResponse,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[api_auth],
+    )
+    async def upload_input(
+        file: Annotated[UploadFile, File(description="One input artifact")],
+    ) -> UploadResponse:
+        filename = _uploaded_filename(file.filename)
+        supplied_media_type = file.content_type or "application/octet-stream"
+        upload_limit = min(
+            effective_settings.max_upload_bytes,
+            effective_settings.https_policy.max_input_bytes,
+            effective_uploads.max_upload_bytes,
+        )
+        content = bytearray()
+        try:
+            while chunk := await file.read(64 * 1024):
+                content.extend(chunk)
+                if len(content) > upload_limit:
+                    raise HTTPException(status_code=413, detail="Upload exceeds the size limit")
+        finally:
+            await file.close()
+        try:
+            media_type = _validate_media_type(supplied_media_type.strip())
+            snapshot = await effective_uploads.put(
+                bytes(content),
+                filename=filename,
+                media_type=media_type,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except UploadTooLargeError as exc:
+            raise HTTPException(status_code=413, detail="Upload exceeds the size limit") from exc
+        except UploadStoreFullError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Upload capacity is exhausted",
+                headers={"Retry-After": "1"},
+            ) from exc
+        return _upload_response(snapshot)
+
+    @app.post(
         "/api/v1/runs",
         response_model=RunStatusResponse,
         status_code=status.HTTP_202_ACCEPTED,
         dependencies=[api_auth],
     )
     async def submit_run(request: RunSubmitRequest) -> RunStatusResponse:
-        plugin_ids = {_plugin_id_of(item) for item in _registry_descriptors(registry)}
-        if request.plugin_id not in plugin_ids:
-            raise HTTPException(status_code=404, detail="Plugin not found")
-        if request.provider not in normalized_providers:
-            raise HTTPException(status_code=404, detail="Provider not found")
-        if (
-            _ACTION_MODE_RANK[request.options.action_mode]
-            > _ACTION_MODE_RANK[effective_settings.max_action_mode]
-        ):
-            raise HTTPException(status_code=403, detail="Requested action mode is not allowed")
-        if request.options.enrich_web and not effective_settings.allow_web_enrichment:
-            raise HTTPException(status_code=403, detail="Web enrichment is not allowed")
-        try:
-            if isinstance(request.source, HttpsSource):
-                effective_io.validate_allowed_server(request.source.url.get_secret_value())
-            if isinstance(request.sink, HttpsPutSink):
-                effective_io.validate_allowed_server(request.sink.url.get_secret_value())
-            snapshot = await manager.submit(request)
-        except HttpsIoError as exc:
-            raise HTTPException(status_code=422, detail=exc.public_message) from exc
-        except (JobQueueFullError, RunStoreFullError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Run capacity is exhausted",
-                headers={"Retry-After": "1"},
-            ) from exc
-        return _status_response(snapshot)
+        return _status_response(await admit_and_submit(request))
+
+    @app.get(
+        "/api/v1/runs",
+        response_model=RunsResponse,
+        dependencies=[api_auth],
+    )
+    async def list_runs(
+        run_status: Annotated[RunStatus | None, Query(alias="status")] = None,
+        plugin_id: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+        provider: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+        parent_run_id: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    ) -> RunsResponse:
+        snapshots = await manager.list_runs(
+            states=frozenset({run_status}) if run_status is not None else None,
+            plugin_id=plugin_id,
+            provider=provider,
+            parent_run_id=parent_run_id,
+            limit=limit,
+        )
+        runs = [_status_response(snapshot) for snapshot in snapshots]
+        return RunsResponse(runs=runs, count=len(runs))
 
     @app.get(
         "/api/v1/runs/{run_id}",
@@ -627,6 +974,87 @@ def create_app(
             return _status_response(await manager.get(run_id))
         except RunNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Run not found") from exc
+
+    @app.post(
+        "/api/v1/runs/{run_id}/rerun",
+        response_model=RunStatusResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+        dependencies=[api_auth],
+    )
+    async def rerun(run_id: str, request: RunSubmitRequest) -> RunStatusResponse:
+        """Create a child run from an explicit, freshly admitted run specification."""
+
+        try:
+            parent = await manager.get(run_id)
+        except RunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Run not found") from exc
+        if parent.state not in TERMINAL_STATES:
+            raise HTTPException(status_code=409, detail="Only a terminal run can be rerun")
+        if (
+            parent.metadata.plugin_id is not None
+            and request.plugin_id != parent.metadata.plugin_id
+        ):
+            raise HTTPException(status_code=409, detail="Rerun plugin must match parent run")
+        return _status_response(await admit_and_submit(request, parent_run_id=run_id))
+
+    @app.get(
+        "/api/v1/runs/{run_id}/events",
+        dependencies=[api_auth],
+    )
+    async def run_events(
+        run_id: str,
+        request: Request,
+        after: Annotated[int, Query(ge=0)] = 0,
+        last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    ) -> StreamingResponse:
+        cursor = _event_cursor(after, last_event_id)
+        try:
+            initial_events = await manager.get_events(run_id, after_sequence=cursor)
+        except RunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Run not found") from exc
+
+        async def stream() -> AsyncIterator[str]:
+            nonlocal cursor
+            pending = initial_events
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    if not pending:
+                        try:
+                            pending = await manager.wait_for_events(
+                                run_id,
+                                after_sequence=cursor,
+                                timeout_seconds=15.0,
+                            )
+                        except RunNotFoundError:
+                            return
+                        if not pending:
+                            try:
+                                snapshot = await manager.get(run_id)
+                            except RunNotFoundError:
+                                return
+                            if snapshot.state in TERMINAL_STATES:
+                                return
+                            yield ": keep-alive\n\n"
+                            continue
+                    for event in pending:
+                        cursor = event.sequence
+                        yield _sse_frame(event)
+                    if pending[-1].type in _TERMINAL_EVENT_TYPES:
+                        return
+                    pending = ()
+            except asyncio.CancelledError:
+                raise
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.post(
         "/api/v1/runs/{run_id}/cancel",
@@ -676,6 +1104,7 @@ __all__ = [
     "HttpsPutSink",
     "HttpsSource",
     "InlineJsonSource",
+    "InlineTextSource",
     "PluginSchemaResponse",
     "PluginsResponse",
     "ResolvedRunRequest",
@@ -685,6 +1114,9 @@ __all__ = [
     "RunSource",
     "RunStatusResponse",
     "RunSubmitRequest",
+    "RunsResponse",
+    "UploadedSource",
+    "UploadResponse",
     "WebSettings",
     "create_app",
     "uvicorn_settings",
