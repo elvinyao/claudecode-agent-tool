@@ -5,6 +5,11 @@ from agent_core.providers.base import BaseProvider, ProviderAdapter
 from agent_core.providers.capabilities import ProviderCapabilities
 from agent_core.providers.claude import ClaudeProvider
 from agent_core.providers.codex import CodexProvider
+from agent_core.providers.diagnostics import (
+    ProviderDiagnostic,
+    ProviderReadiness,
+    diagnose_provider_runtime,
+)
 from agent_core.providers.errors import (
     ProviderAuthenticationError,
     ProviderCapabilityError,
@@ -35,14 +40,17 @@ __all__ = [
     "ProviderCapabilities",
     "ProviderCapabilityError",
     "ProviderConfigurationError",
+    "ProviderDiagnostic",
     "ProviderError",
     "ProviderExecutionError",
     "ProviderPermissionError",
     "ProviderRateLimitError",
+    "ProviderReadiness",
     "ProviderRegistry",
     "ProviderResponseError",
     "ProviderTimeoutError",
     "ProviderTransportError",
     "ProviderUnavailableError",
     "create_provider",
+    "diagnose_provider_runtime",
 ]

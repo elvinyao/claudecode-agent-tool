@@ -19,6 +19,11 @@ from pydantic import ValidationError
 from agent_core.audit import AuditLogger, JsonlAuditSink
 from agent_core.contracts import ActionMode, RunStatus
 from agent_core.providers import DEFAULT_PROVIDER_REGISTRY, ProviderRegistry
+from agent_core.providers.diagnostics import (
+    ProviderDiagnostic,
+    ProviderReadiness,
+    diagnose_provider_runtime,
+)
 from agent_core.providers.errors import (
     ProviderCapabilityError,
     ProviderConfigurationError,
@@ -54,6 +59,35 @@ def build_parser(*, prog: str = "agent-core") -> argparse.ArgumentParser:
     plugins = commands.add_parser("plugins", help="Inspect installed domain plugins.")
     plugin_commands = plugins.add_subparsers(dest="plugins_command", required=True)
     plugin_commands.add_parser("list", help="List registered domain plugins.")
+    plugin_describe = plugin_commands.add_parser(
+        "describe",
+        help="Show one plugin's public metadata and JSON schemas.",
+    )
+    plugin_describe.add_argument("plugin_id", metavar="PLUGIN_ID")
+    plugin_describe.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Emit a machine-readable plugin descriptor.",
+    )
+
+    doctor = commands.add_parser(
+        "doctor",
+        help="Check plugin discovery and provider runtime readiness offline.",
+    )
+    doctor.add_argument(
+        "--provider",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Check only this registered provider; repeat to check more than one.",
+    )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Emit a machine-readable diagnostic report.",
+    )
 
     run = commands.add_parser("run", help="Run one domain plugin on a local file.")
     run.add_argument("--plugin", required=True, metavar="ID")
@@ -126,7 +160,15 @@ def main(
             else PluginRegistry.from_entry_points()
         )
         if args.command == "plugins":
-            return _list_plugins(registry)
+            if args.plugins_command == "list":
+                return _list_plugins(registry)
+            if args.plugins_command == "describe":
+                return _describe_plugin(args, registry)
+            raise RuntimeConfigurationError(
+                f"unsupported plugins command: {args.plugins_command}"
+            )
+        if args.command == "doctor":
+            return _doctor(args, registry, provider_registry)
         effective_runtime = runtime or _default_runtime(registry, provider_registry)
         if args.command == "run":
             return asyncio.run(_run_local(args, effective_runtime))
@@ -151,6 +193,136 @@ def _list_plugins(registry: PluginRegistry) -> int:
             f"{descriptor.api_version}\t{descriptor.display_name}"
         )
     return EXIT_OK
+
+
+def _describe_plugin(args: argparse.Namespace, registry: PluginRegistry) -> int:
+    descriptor = registry.get(args.plugin_id)
+    payload = {
+        "plugin_id": descriptor.plugin_id,
+        "display_name": descriptor.display_name,
+        "version": descriptor.version,
+        "api_version": descriptor.api_version,
+        "source": descriptor.source,
+        "required_capabilities": list(descriptor.required_capabilities),
+        "input_schema": descriptor.input_schema,
+        "options_schema": descriptor.options_schema,
+        "output_schema": descriptor.output_schema,
+    }
+    if args.json_output:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return EXIT_OK
+
+    print(f"PLUGIN\t{payload['plugin_id']}")
+    print(f"NAME\t{payload['display_name']}")
+    print(f"VERSION\t{payload['version']}")
+    print(f"API\t{payload['api_version']}")
+    print(f"SOURCE\t{payload['source']}")
+    capabilities = ",".join(payload["required_capabilities"]) or "none"
+    print(f"CAPABILITIES\t{capabilities}")
+    for label, key in (
+        ("INPUT_SCHEMA", "input_schema"),
+        ("OPTIONS_SCHEMA", "options_schema"),
+        ("OUTPUT_SCHEMA", "output_schema"),
+    ):
+        print(label)
+        print(json.dumps(payload[key], ensure_ascii=False, indent=2, sort_keys=True))
+    return EXIT_OK
+
+
+def _doctor(
+    args: argparse.Namespace,
+    registry: PluginRegistry,
+    provider_registry: ProviderRegistry,
+) -> int:
+    requested: list[str] = []
+    for raw_name in args.provider:
+        normalized = raw_name.strip().lower()
+        if not normalized or raw_name != raw_name.strip():
+            raise RuntimeConfigurationError(
+                "--provider values must be non-empty, trimmed provider names"
+            )
+        if normalized not in provider_registry.names:
+            available = ", ".join(provider_registry.names) or "none"
+            raise RuntimeConfigurationError(
+                f"unknown provider {raw_name!r}; available providers: {available}"
+            )
+        if normalized not in requested:
+            requested.append(normalized)
+
+    provider_names = tuple(requested) or provider_registry.names
+    diagnostics = tuple(diagnose_provider_runtime(name) for name in provider_names)
+    plugins = registry.list()
+    healthy = _doctor_is_healthy(
+        diagnostics,
+        has_plugins=bool(plugins),
+        explicit_selection=bool(requested),
+    )
+    status = "ready" if healthy else "degraded"
+    payload = {
+        "status": status,
+        "scope": {
+            "offline": True,
+            "authentication_checked": False,
+            "network_checked": False,
+        },
+        "providers": [
+            {
+                "name": diagnostic.name,
+                "status": diagnostic.status.value,
+                "runtime": diagnostic.runtime,
+                "detail": diagnostic.detail,
+            }
+            for diagnostic in diagnostics
+        ],
+        "plugins": [
+            {
+                "id": descriptor.plugin_id,
+                "version": descriptor.version,
+                "api_version": descriptor.api_version,
+                "name": descriptor.display_name,
+            }
+            for descriptor in plugins
+        ],
+    }
+
+    if args.json_output:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        _print_doctor_report(payload)
+    return EXIT_OK if healthy else EXIT_DEGRADED
+
+
+def _doctor_is_healthy(
+    diagnostics: tuple[ProviderDiagnostic, ...],
+    *,
+    has_plugins: bool,
+    explicit_selection: bool,
+) -> bool:
+    if not has_plugins or not diagnostics:
+        return False
+    if explicit_selection:
+        return all(item.ready for item in diagnostics)
+    return (
+        any(item.ready for item in diagnostics)
+        and all(item.status is not ProviderReadiness.MISCONFIGURED for item in diagnostics)
+    )
+
+
+def _print_doctor_report(payload: dict[str, Any]) -> None:
+    print(f"DOCTOR\t{str(payload['status']).upper()}")
+    print("SCOPE\toffline only; authentication and network access were not checked")
+    print("PROVIDER\tSTATUS\tRUNTIME\tDETAIL")
+    for diagnostic in payload["providers"]:
+        print(
+            f"{diagnostic['name']}\t{diagnostic['status']}\t"
+            f"{diagnostic['runtime']}\t{diagnostic['detail']}"
+        )
+    print("PLUGIN\tVERSION\tAPI\tNAME")
+    for plugin in payload["plugins"]:
+        print(
+            f"{plugin['id']}\t{plugin['version']}\t"
+            f"{plugin['api_version']}\t{plugin['name']}"
+        )
 
 
 async def _run_local(args: argparse.Namespace, runtime: AgentRuntime) -> int:
