@@ -6,13 +6,13 @@ import re
 from collections.abc import Callable, Sequence
 
 from agent_core.providers.antigravity import AntigravityProvider
-from agent_core.providers.base import BaseProvider
+from agent_core.providers.base import ProviderAdapter
 from agent_core.providers.claude import ClaudeProvider
 from agent_core.providers.codex import CodexProvider
 from agent_core.providers.errors import ProviderConfigurationError
 from agent_core.skills import SkillSpec
 
-ProviderFactory = Callable[..., BaseProvider]
+ProviderFactory = Callable[..., ProviderAdapter]
 _PROVIDER_NAME = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 
 
@@ -44,7 +44,7 @@ class ProviderRegistry:
         *,
         model: str | None = None,
         skills: Sequence[SkillSpec] = (),
-    ) -> BaseProvider:
+    ) -> ProviderAdapter:
         if not isinstance(name, str):
             raise ProviderConfigurationError("provider name must be a string")
         normalized = name.strip().lower()
@@ -69,7 +69,7 @@ def create_provider(
     *,
     model: str | None = None,
     skills: Sequence[SkillSpec] = (),
-) -> BaseProvider:
+) -> ProviderAdapter:
     """Create one built-in adapter without importing its optional SDK."""
 
     return DEFAULT_PROVIDER_REGISTRY.create(name, model=model, skills=skills)

@@ -154,9 +154,7 @@ def classify_provider_exception(exc: Exception, *, provider: str) -> ProviderErr
 
     if status == 401:
         return ProviderAuthenticationError(message, provider=provider)
-    if status == 403 or any(
-        token in normalized_name for token in ("forbidden", "permission")
-    ):
+    if status == 403 or any(token in normalized_name for token in ("forbidden", "permission")):
         return ProviderPermissionError(message, provider=provider)
     if any(token in normalized_name for token in ("auth", "credential")):
         return ProviderAuthenticationError(message, provider=provider)

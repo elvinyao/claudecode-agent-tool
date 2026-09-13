@@ -30,6 +30,7 @@ from agent_core.contracts import (
     RunStatus,
     StrictFrozenModel,
 )
+from agent_core.progress import ProgressEventType, ProgressSink, WorkflowProgress
 from agent_core.providers import (
     DEFAULT_PROVIDER_REGISTRY,
     ProviderAdapter,
@@ -156,9 +157,9 @@ class _ProviderSemaphorePool:
     """
 
     _guard = threading.Lock()
-    _by_loop: WeakKeyDictionary[
-        asyncio.AbstractEventLoop, dict[str, asyncio.Semaphore]
-    ] = WeakKeyDictionary()
+    _by_loop: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Semaphore]] = (
+        WeakKeyDictionary()
+    )
 
     @classmethod
     def get(cls, provider_name: str) -> asyncio.Semaphore:
@@ -193,41 +194,30 @@ class _SerializedProvider:
         *,
         timeout_seconds: float | None = None,
     ) -> ProviderResult[OutputT]:
-        await _emit_audit(
-            self._audit_logger,
-            run_id=self._run_id,
-            event_type=AuditEventType.PROVIDER_REQUESTED,
-            subject_id=request.request_id,
-            payload=f"{request.system_prompt}\0{request.prompt}",
-            status=RunStatus.RUNNING,
-            metadata={
-                "provider.name": self.name,
-                "provider.model": self.model,
-                "provider.web_access": request.tool_policy.web_access,
-            },
-        )
-        if request.tool_policy.web_access and not self._allow_web_access:
-            error = ProviderCapabilityError(
-                "web access is disabled by the run policy",
-                provider=self.name,
-            )
-            await _emit_audit(
-                self._audit_logger,
-                run_id=self._run_id,
-                event_type=AuditEventType.PROVIDER_COMPLETED,
-                subject_id=request.request_id,
-                status=RunStatus.FAILED,
-                metadata={
-                    "provider.name": self.name,
-                    "provider.model": self.model,
-                    "error.code": error.code,
-                    "error.type": error.__class__.__name__,
-                },
-            )
-            raise error
         gate = _ProviderSemaphorePool.get(self.name)
         try:
             async with gate:
+                # Enter the fair provider gate before the asynchronous audit
+                # write so ordered AgentNode inputs cannot be reordered by the
+                # audit thread pool before they reach a serialized provider.
+                await _emit_audit(
+                    self._audit_logger,
+                    run_id=self._run_id,
+                    event_type=AuditEventType.PROVIDER_REQUESTED,
+                    subject_id=request.request_id,
+                    payload=f"{request.system_prompt}\0{request.prompt}",
+                    status=RunStatus.RUNNING,
+                    metadata={
+                        "provider.name": self.name,
+                        "provider.model": self.model,
+                        "provider.web_access": request.tool_policy.web_access,
+                    },
+                )
+                if request.tool_policy.web_access and not self._allow_web_access:
+                    raise ProviderCapabilityError(
+                        "web access is disabled by the run policy",
+                        provider=self.name,
+                    )
                 result = await self._delegate.execute(
                     request,
                     timeout_seconds=timeout_seconds,
@@ -287,15 +277,11 @@ class AgentRuntime:
         attempt_timeout_seconds: float | None = 300.0,
         max_agent_concurrency: int = 4,
     ) -> None:
-        if default_deadline_seconds is not None and not _positive_finite(
-            default_deadline_seconds
-        ):
+        if default_deadline_seconds is not None and not _positive_finite(default_deadline_seconds):
             raise RuntimeConfigurationError(
                 "default_deadline_seconds must be finite and greater than zero"
             )
-        if attempt_timeout_seconds is not None and not _positive_finite(
-            attempt_timeout_seconds
-        ):
+        if attempt_timeout_seconds is not None and not _positive_finite(attempt_timeout_seconds):
             raise RuntimeConfigurationError(
                 "attempt_timeout_seconds must be finite and greater than zero"
             )
@@ -324,6 +310,7 @@ class AgentRuntime:
         cancel_event: asyncio.Event | None = None,
         run_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
+        progress_sink: ProgressSink | None = None,
     ) -> RuntimeResult:
         """Validate, compose, run, and normalize one plugin workflow.
 
@@ -351,18 +338,16 @@ class AgentRuntime:
         if not isinstance(allow_web_access, bool):
             raise RuntimeConfigurationError("allow_web_access must be bool")
         effective_deadline = (
-            self.default_deadline_seconds
-            if deadline_seconds is None
-            else deadline_seconds
+            self.default_deadline_seconds if deadline_seconds is None else deadline_seconds
         )
         if effective_deadline is not None and not _positive_finite(effective_deadline):
-            raise RuntimeConfigurationError(
-                "deadline_seconds must be finite and greater than zero"
-            )
+            raise RuntimeConfigurationError("deadline_seconds must be finite and greater than zero")
         if cancel_event is not None and not isinstance(cancel_event, asyncio.Event):
             raise RuntimeConfigurationError("cancel_event must be an asyncio.Event")
         if metadata is not None and not isinstance(metadata, Mapping):
             raise RuntimeConfigurationError("metadata must be a mapping")
+        if progress_sink is not None and not callable(progress_sink):
+            raise RuntimeConfigurationError("progress_sink must be callable")
         if cancel_event is not None and cancel_event.is_set():
             raise asyncio.CancelledError
 
@@ -439,16 +424,17 @@ class AgentRuntime:
                 metadata=workflow_metadata,
                 deadline_seconds=effective_deadline,
                 attempt_timeout_seconds=self.attempt_timeout_seconds,
+                progress_sink=_workflow_progress_sink(
+                    self.audit_logger,
+                    action_mode=action_mode,
+                    downstream=progress_sink,
+                ),
             )
             workflow_result = await _await_workflow(execution, cancel_event=cancel_event)
-            await _audit_workflow_nodes(
-                self.audit_logger,
-                workflow_result,
-                action_mode=action_mode,
-            )
             result = _normalize_result(
                 workflow_result,
                 output_model=manifest.output_model,
+                artifact_content_model=manifest.artifact_content_model,
                 plugin_id=manifest.plugin_id,
                 provider_name=adapter.name,
                 model=adapter.model,
@@ -513,43 +499,101 @@ async def _emit_audit_best_effort(logger: AuditLogger, **values: Any) -> None:
         return
 
 
-async def _audit_workflow_nodes(
+def _workflow_progress_sink(
     logger: AuditLogger,
-    result: WorkflowResult,
     *,
     action_mode: ActionMode,
+    downstream: ProgressSink | None,
+) -> ProgressSink:
+    async def emit(event: WorkflowProgress) -> None:
+        audit_error: Exception | None = None
+        try:
+            await _audit_workflow_progress(
+                logger,
+                event=event,
+                action_mode=action_mode,
+            )
+        except Exception as exc:
+            # The live consumer must still observe the event that exposed an
+            # audit outage. Re-raising below keeps the audit boundary
+            # fail-closed rather than silently degrading compliance behavior.
+            audit_error = exc
+
+        if downstream is not None:
+            await downstream(event)
+        if audit_error is not None:
+            raise audit_error
+
+    return emit
+
+
+async def _audit_workflow_progress(
+    logger: AuditLogger,
+    *,
+    event: WorkflowProgress,
+    action_mode: ActionMode,
 ) -> None:
-    for node in result.nodes:
-        duration_ms = max(0.0, (node.finished_at - node.started_at).total_seconds() * 1000)
+    """Map one payload-free workflow event to its audit records."""
+
+    if event.type is ProgressEventType.STEP_STARTED:
         await _emit_audit(
             logger,
-            run_id=result.run_id,
+            run_id=event.run_id,
+            event_type=AuditEventType.NODE_STARTED,
+            subject_id=event.node_id,
+            status=RunStatus.RUNNING,
+            metadata={"node.kind": event.node_kind},
+        )
+    elif event.type in {
+        ProgressEventType.STEP_COMPLETED,
+        ProgressEventType.STEP_CANCELLED,
+        ProgressEventType.STEP_FAILED,
+    }:
+        status_by_type = {
+            ProgressEventType.STEP_COMPLETED: RunStatus.SUCCEEDED,
+            ProgressEventType.STEP_CANCELLED: RunStatus.CANCELLED,
+            ProgressEventType.STEP_FAILED: RunStatus.FAILED,
+        }
+        default_node_status = {
+            ProgressEventType.STEP_COMPLETED: "succeeded",
+            ProgressEventType.STEP_CANCELLED: "cancelled",
+            ProgressEventType.STEP_FAILED: "failed",
+        }
+        metadata: dict[str, Any] = {
+            "node.kind": event.node_kind,
+            "node.status": event.node_status or default_node_status[event.type],
+        }
+        if event.duration_ms is not None:
+            metadata["node.duration_ms"] = round(event.duration_ms, 3)
+        if event.error_code is not None:
+            metadata["error.code"] = event.error_code
+        await _emit_audit(
+            logger,
+            run_id=event.run_id,
             event_type=AuditEventType.NODE_COMPLETED,
-            subject_id=node.node_id,
+            subject_id=event.node_id,
+            status=status_by_type[event.type],
+            metadata=metadata,
+        )
+    if event.type is ProgressEventType.STEP_COMPLETED and event.node_kind == "action":
+        await _emit_audit(
+            logger,
+            run_id=event.run_id,
+            event_type=AuditEventType.ACTION_DECIDED,
+            subject_id=event.node_id,
             status=RunStatus.SUCCEEDED,
             metadata={
-                "node.kind": node.kind,
-                "node.status": node.status.value,
-                "node.duration_ms": round(duration_ms, 3),
+                "action.mode": action_mode.value,
+                "action.executed": event.node_status == "succeeded",
             },
         )
-        if node.kind == "action":
-            await _emit_audit(
-                logger,
-                run_id=result.run_id,
-                event_type=AuditEventType.ACTION_DECIDED,
-                subject_id=node.node_id,
-                status=RunStatus.SUCCEEDED,
-                metadata={
-                    "action.mode": action_mode.value,
-                    "action.executed": node.status.value == "succeeded",
-                },
-            )
 
 
 def _positive_finite(value: float) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and (
-        value > 0 and math.isfinite(value)
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and (value > 0 and math.isfinite(value))
     )
 
 
@@ -578,9 +622,7 @@ def _skills_for_run(
             skills = ()
         else:
             resolved = resolver(options)
-            if not isinstance(resolved, Sequence) or isinstance(
-                resolved, (str, bytes, bytearray)
-            ):
+            if not isinstance(resolved, Sequence) or isinstance(resolved, (str, bytes, bytearray)):
                 raise RuntimeContractError(
                     "plugin skills_for_options() must return an ordered sequence"
                 )
@@ -679,14 +721,13 @@ def _normalize_result(
     workflow_result: WorkflowResult,
     *,
     output_model: type[BaseModel],
+    artifact_content_model: type[BaseModel] | None,
     plugin_id: str,
     provider_name: str,
     model: str,
 ) -> RuntimeResult:
     candidates = tuple(
-        output
-        for output in workflow_result.final_outputs
-        if isinstance(output, output_model)
+        output for output in workflow_result.final_outputs if isinstance(output, output_model)
     )
     if len(candidates) != 1:
         raise RuntimeContractError(
@@ -697,11 +738,10 @@ def _normalize_result(
 
     if not isinstance(output, ArtifactOutput):
         raise RuntimeContractError("plugin terminal output must inherit ArtifactOutput")
+    _validate_artifact_content(output, artifact_content_model)
 
     partial = output.partial or workflow_result.status is RunStatus.DEGRADED
-    warnings = tuple(
-        dict.fromkeys((*workflow_result.warnings, *output.warnings))
-    )
+    warnings = tuple(dict.fromkeys((*workflow_result.warnings, *output.warnings)))
     return RuntimeResult(
         run_id=workflow_result.run_id,
         plugin_id=plugin_id,
@@ -716,6 +756,29 @@ def _normalize_result(
         warnings=warnings,
         partial=partial,
     )
+
+
+def _validate_artifact_content(
+    output: ArtifactOutput,
+    artifact_content_model: type[BaseModel] | None,
+) -> None:
+    """Enforce the typed JSON content contract advertised by a plugin manifest."""
+
+    if artifact_content_model is None:
+        return
+    base_media_type = output.media_type.partition(";")[0].strip().lower()
+    if base_media_type != "application/json" and not base_media_type.endswith("+json"):
+        raise RuntimeContractError(
+            "plugin artifact_content_model requires a JSON artifact media type"
+        )
+    try:
+        artifact_content_model.model_validate_json(output.content, strict=True)
+    except (ValidationError, ValueError):
+        # Pydantic's ValidationError retains the rejected input. Do not chain
+        # it because artifact content can contain private or secret material.
+        raise RuntimeContractError(
+            "plugin artifact content does not satisfy its declared typed schema"
+        ) from None
 
 
 __all__ = [

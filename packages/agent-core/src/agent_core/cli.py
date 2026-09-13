@@ -140,6 +140,15 @@ def build_parser(*, prog: str = "agent-core") -> argparse.ArgumentParser:
         default=ActionMode.DISABLED.value,
         help="Maximum ActionNode authority exposed by this server.",
     )
+    serve.add_argument(
+        "--data-dir",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "Persist safe run history and artifacts locally. The execution queue "
+            "remains single-process and in memory."
+        ),
+    )
     return parser
 
 
@@ -155,18 +164,14 @@ def main(
     args = build_parser().parse_args(argv)
     try:
         registry = plugin_registry or (
-            runtime.plugin_registry
-            if runtime is not None
-            else PluginRegistry.from_entry_points()
+            runtime.plugin_registry if runtime is not None else PluginRegistry.from_entry_points()
         )
         if args.command == "plugins":
             if args.plugins_command == "list":
                 return _list_plugins(registry)
             if args.plugins_command == "describe":
                 return _describe_plugin(args, registry)
-            raise RuntimeConfigurationError(
-                f"unsupported plugins command: {args.plugins_command}"
-            )
+            raise RuntimeConfigurationError(f"unsupported plugins command: {args.plugins_command}")
         if args.command == "doctor":
             return _doctor(args, registry, provider_registry)
         effective_runtime = runtime or _default_runtime(registry, provider_registry)
@@ -197,6 +202,7 @@ def _list_plugins(registry: PluginRegistry) -> int:
 
 def _describe_plugin(args: argparse.Namespace, registry: PluginRegistry) -> int:
     descriptor = registry.get(args.plugin_id)
+    descriptor_ownership = getattr(descriptor, "ownership", None)
     payload = {
         "plugin_id": descriptor.plugin_id,
         "display_name": descriptor.display_name,
@@ -207,6 +213,12 @@ def _describe_plugin(args: argparse.Namespace, registry: PluginRegistry) -> int:
         "input_schema": descriptor.input_schema,
         "options_schema": descriptor.options_schema,
         "output_schema": descriptor.output_schema,
+        "artifact_content_schema": getattr(descriptor, "artifact_content_schema", None),
+        "ownership": (
+            descriptor_ownership.model_dump(mode="json")
+            if descriptor_ownership is not None
+            else None
+        ),
     }
     if args.json_output:
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
@@ -223,6 +235,8 @@ def _describe_plugin(args: argparse.Namespace, registry: PluginRegistry) -> int:
         ("INPUT_SCHEMA", "input_schema"),
         ("OPTIONS_SCHEMA", "options_schema"),
         ("OUTPUT_SCHEMA", "output_schema"),
+        ("ARTIFACT_CONTENT_SCHEMA", "artifact_content_schema"),
+        ("OWNERSHIP", "ownership"),
     ):
         print(label)
         print(json.dumps(payload[key], ensure_ascii=False, indent=2, sort_keys=True))
@@ -302,9 +316,8 @@ def _doctor_is_healthy(
         return False
     if explicit_selection:
         return all(item.ready for item in diagnostics)
-    return (
-        any(item.ready for item in diagnostics)
-        and all(item.status is not ProviderReadiness.MISCONFIGURED for item in diagnostics)
+    return any(item.ready for item in diagnostics) and all(
+        item.status is not ProviderReadiness.MISCONFIGURED for item in diagnostics
     )
 
 
@@ -319,10 +332,7 @@ def _print_doctor_report(payload: dict[str, Any]) -> None:
         )
     print("PLUGIN\tVERSION\tAPI\tNAME")
     for plugin in payload["plugins"]:
-        print(
-            f"{plugin['id']}\t{plugin['version']}\t"
-            f"{plugin['api_version']}\t{plugin['name']}"
-        )
+        print(f"{plugin['id']}\t{plugin['version']}\t{plugin['api_version']}\t{plugin['name']}")
 
 
 async def _run_local(args: argparse.Namespace, runtime: AgentRuntime) -> int:
@@ -496,6 +506,7 @@ def _serve(
         max_action_mode=ActionMode(args.max_action_mode),
         allow_web_enrichment=args.allow_web_enrichment,
         https_policy=HttpsIoPolicy(allowed_servers=frozenset(args.allow_https_server)),
+        data_dir=args.data_dir.resolve() if args.data_dir is not None else None,
     )
 
     async def execute(request: Any, job_context: Any) -> JobExecutionResult:
@@ -515,11 +526,10 @@ def _serve(
             options=options,
             model=request.model,
             action_mode=request.action_mode,
-            allow_web_access=(
-                settings.allow_web_enrichment and request.enrich_web
-            ),
+            allow_web_access=(settings.allow_web_enrichment and request.enrich_web),
             deadline_seconds=request.timeout_seconds,
             cancel_event=job_context.cancel_event,
+            progress_sink=job_context.emit_progress,
             run_id=job_context.run_id,
             metadata={"input_media_type": request.input_media_type},
         )
@@ -538,10 +548,21 @@ def _serve(
             },
         )
 
+    def preflight(request: Any) -> None:
+        """Validate plugin options synchronously without invoking a Provider."""
+
+        plugin = registry.create_for_run(request.plugin_id)
+        options: dict[str, Any] = dict(request.options.parameters)
+        descriptor = registry.get(request.plugin_id)
+        if "enrich_web" in descriptor.options_schema.get("properties", {}):
+            options["enrich_web"] = request.options.enrich_web
+        plugin.manifest.options_model.model_validate(options, strict=True)
+
     app = create_app(
         registry=registry,
         provider_names=provider_registry.names,
         run_executor=execute,
+        run_preflight=preflight,
         settings=settings,
     )
     uvicorn.run(app, **uvicorn_settings(settings))

@@ -20,6 +20,7 @@ from agent_core.contracts import (
     RunStatus,
     StrictFrozenModel,
 )
+from agent_core.progress import ProgressEventType, ProgressSink, WorkflowProgress
 
 NodeHandler: TypeAlias = Callable[[Any, "WorkflowContext"], Any | Awaitable[Any]]
 NodeCondition: TypeAlias = Callable[[Any, "WorkflowContext"], bool | Awaitable[bool]]
@@ -27,6 +28,7 @@ AgentFallbackHandler: TypeAlias = Callable[
     [Any, Exception, "WorkflowContext"], Any | Awaitable[Any]
 ]
 _NODE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_PROGRESS_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 class WorkflowError(AgentCoreError):
@@ -115,6 +117,7 @@ class WorkflowContext(StrictFrozenModel):
     metadata: Mapping[str, Any] = Field(default_factory=dict)
     deadline_at: datetime | None = None
     attempt_timeout_seconds: float | None = Field(default=None, gt=0)
+    progress_sink: ProgressSink | None = Field(default=None, exclude=True, repr=False)
 
     def remaining_seconds(self) -> float | None:
         """Return wall-clock time remaining for handler-visible deadline checks."""
@@ -191,8 +194,7 @@ class AgentNode(BaseNode):
         if not value:
             raise ValueError("fallback_error_types must not be empty")
         if any(
-            not isinstance(error_type, type)
-            or not issubclass(error_type, Exception)
+            not isinstance(error_type, type) or not issubclass(error_type, Exception)
             for error_type in value
         ):
             raise ValueError("fallback_error_types must contain Exception classes")
@@ -385,6 +387,7 @@ class Workflow:
         metadata: Mapping[str, Any] | None = None,
         deadline_seconds: float | None = None,
         attempt_timeout_seconds: float | None = None,
+        progress_sink: ProgressSink | None = None,
     ) -> WorkflowResult:
         """Execute the graph and preserve declared order at every fanout boundary."""
 
@@ -398,11 +401,10 @@ class Workflow:
             action_mode=action_mode,
             metadata={} if metadata is None else metadata,
             deadline_at=(
-                now + timedelta(seconds=deadline_seconds)
-                if deadline_seconds is not None
-                else None
+                now + timedelta(seconds=deadline_seconds) if deadline_seconds is not None else None
             ),
             attempt_timeout_seconds=attempt_timeout_seconds,
+            progress_sink=progress_sink,
         )
         self._validate_value(
             node_id="workflow-input",
@@ -436,6 +438,12 @@ class Workflow:
         for node in self._order:
             started_at = datetime.now(timezone.utc)
             payload = self._payload_for(node, initial_input, outputs)
+            await _emit_workflow_progress(
+                context,
+                ProgressEventType.STEP_STARTED,
+                node,
+                node_status="running",
+            )
             try:
                 if node.when is not None:
                     condition = await _invoke_condition(node.when, payload, context)
@@ -470,16 +478,69 @@ class Workflow:
                         many=node.output_many,
                     )
             except asyncio.CancelledError:
+                await _emit_workflow_progress_best_effort(
+                    context,
+                    ProgressEventType.STEP_CANCELLED,
+                    node,
+                    node_status="cancelled",
+                    error_code="node_cancelled",
+                    duration_ms=max(
+                        0.0,
+                        (datetime.now(timezone.utc) - started_at).total_seconds() * 1000,
+                    ),
+                )
                 raise
-            except (NodeExecutionError, WorkflowDeadlineExceededError):
+            except (NodeExecutionError, WorkflowDeadlineExceededError) as exc:
+                await _emit_workflow_progress_best_effort(
+                    context,
+                    ProgressEventType.STEP_FAILED,
+                    node,
+                    node_status="failed",
+                    error_code=_safe_progress_error_code(exc),
+                    duration_ms=max(
+                        0.0,
+                        (datetime.now(timezone.utc) - started_at).total_seconds() * 1000,
+                    ),
+                )
                 raise
             except Exception as exc:
+                await _emit_workflow_progress_best_effort(
+                    context,
+                    ProgressEventType.STEP_FAILED,
+                    node,
+                    node_status="failed",
+                    error_code=_safe_progress_error_code(exc),
+                    duration_ms=max(
+                        0.0,
+                        (datetime.now(timezone.utc) - started_at).total_seconds() * 1000,
+                    ),
+                )
                 raise NodeExecutionError(node.id, str(exc)) from exc
 
             outputs[node.id] = output
             if _contains_partial_provider_result(output):
                 degraded = True
             warnings.extend(_provider_warnings(output))
+            finished_at = datetime.now(timezone.utc)
+            if status is NodeStatus.SUCCEEDED:
+                if node.output_many:
+                    assert isinstance(output, tuple)
+                await _emit_workflow_progress(
+                    context,
+                    ProgressEventType.VALIDATION_COMPLETED,
+                    node,
+                    node_status="succeeded",
+                    accepted_count=(
+                        len(output) if isinstance(output, tuple) and node.output_many else 1
+                    ),
+                )
+            await _emit_workflow_progress(
+                context,
+                ProgressEventType.STEP_COMPLETED,
+                node,
+                node_status=status.value,
+                duration_ms=max(0.0, (finished_at - started_at).total_seconds() * 1000),
+            )
             executions.append(
                 NodeExecution(
                     node_id=node.id,
@@ -487,7 +548,7 @@ class Workflow:
                     status=status,
                     output=output,
                     started_at=started_at,
-                    finished_at=datetime.now(timezone.utc),
+                    finished_at=finished_at,
                 )
             )
 
@@ -528,10 +589,15 @@ class Workflow:
             expected_type=node.input_type,
             many=True,
         )
+        await _emit_workflow_progress(
+            context,
+            ProgressEventType.AGENT_BATCH_STARTED,
+            node,
+            node_status="running",
+            batch_size=len(items),
+        )
         semaphore = (
-            asyncio.Semaphore(node.max_concurrency)
-            if node.max_concurrency is not None
-            else None
+            asyncio.Semaphore(node.max_concurrency) if node.max_concurrency is not None else None
         )
 
         async def execute_attempts(item: Any) -> Any:
@@ -539,8 +605,7 @@ class Workflow:
             for attempt in range(1, node.retry_policy.max_attempts + 1):
                 try:
                     timeout = (
-                        node.retry_policy.attempt_timeout_seconds
-                        or context.attempt_timeout_seconds
+                        node.retry_policy.attempt_timeout_seconds or context.attempt_timeout_seconds
                     )
                     invocation = _invoke(node.handler, item, context)
                     result = (
@@ -587,6 +652,16 @@ class Workflow:
                     raise WorkflowDeadlineExceededError(
                         f"retry delay for node {node.id!r} exceeds the workflow deadline"
                     ) from error
+                await _emit_workflow_progress(
+                    context,
+                    ProgressEventType.RETRY_SCHEDULED,
+                    node,
+                    node_status="running",
+                    attempt=attempt,
+                    max_attempts=node.retry_policy.max_attempts,
+                    delay_seconds=delay,
+                    error_code=_safe_progress_error_code(error),
+                )
                 if delay:
                     await asyncio.sleep(delay)
 
@@ -604,7 +679,16 @@ class Workflow:
                 return await execute_attempts(item)
 
         # asyncio.gather executes concurrently but returns results in input order.
-        return tuple(await asyncio.gather(*(execute_one(item) for item in items)))
+        results = tuple(await asyncio.gather(*(execute_one(item) for item in items)))
+        await _emit_workflow_progress(
+            context,
+            ProgressEventType.AGENT_BATCH_COMPLETED,
+            node,
+            node_status="succeeded",
+            batch_size=len(items),
+            accepted_count=len(results),
+        )
+        return results
 
     async def _execute_action(
         self,
@@ -642,9 +726,7 @@ class Workflow:
         many: bool,
     ) -> Any:
         if many:
-            if not isinstance(value, Sequence) or isinstance(
-                value, (str, bytes, bytearray)
-            ):
+            if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
                 raise NodeExecutionError(node_id, "expected an ordered sequence")
             values = tuple(value)
             invalid = [item for item in values if not isinstance(item, expected_type)]
@@ -700,9 +782,7 @@ def _contains_partial_provider_result(value: Any) -> bool:
 
 def _provider_warnings(value: Any) -> list[str]:
     candidate = getattr(value, "warnings", None)
-    if isinstance(candidate, (list, tuple)) and all(
-        isinstance(item, str) for item in candidate
-    ):
+    if isinstance(candidate, (list, tuple)) and all(isinstance(item, str) for item in candidate):
         return list(candidate)
     if isinstance(value, tuple):
         warnings: list[str] = []
@@ -710,6 +790,51 @@ def _provider_warnings(value: Any) -> list[str]:
             warnings.extend(_provider_warnings(item))
         return warnings
     return []
+
+
+async def _emit_workflow_progress(
+    context: WorkflowContext,
+    event_type: ProgressEventType,
+    node: WorkflowNode,
+    **details: Any,
+) -> None:
+    sink = context.progress_sink
+    if sink is None:
+        return
+    await sink(
+        WorkflowProgress(
+            run_id=context.run_id,
+            type=event_type,
+            node_id=node.id,
+            node_kind=node.kind,
+            **details,
+        )
+    )
+
+
+async def _emit_workflow_progress_best_effort(
+    context: WorkflowContext,
+    event_type: ProgressEventType,
+    node: WorkflowNode,
+    **details: Any,
+) -> None:
+    """Preserve an active node exception if its observer also fails."""
+
+    try:
+        await _emit_workflow_progress(context, event_type, node, **details)
+    except Exception:
+        return
+
+
+def _safe_progress_error_code(error: BaseException) -> str:
+    candidate = getattr(error, "code", None)
+    if isinstance(candidate, str) and _PROGRESS_CODE.fullmatch(candidate) is not None:
+        return candidate
+    if isinstance(error, WorkflowDeadlineExceededError):
+        return "workflow_deadline"
+    if isinstance(error, AgentAttemptTimeoutError):
+        return "agent_attempt_timeout"
+    return "node_execution"
 
 
 __all__ = [
@@ -724,6 +849,7 @@ __all__ = [
     "NodeHandler",
     "NodeCondition",
     "NodeStatus",
+    "ProgressSink",
     "TransformNode",
     "RetryPolicy",
     "UnknownDependencyError",

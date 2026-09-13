@@ -66,8 +66,35 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def validate_storage_filename(filename: str) -> str:
+    """Validate untrusted file metadata before it reaches a storage backend."""
+
+    if (
+        not filename
+        or filename != filename.strip()
+        or len(filename) > 255
+        or filename in {".", ".."}
+        or any(character in filename for character in ("/", "\\", "\x00", "\r", "\n"))
+    ):
+        raise ValueError("filename must be a safe basename of at most 255 characters")
+    return filename
+
+
+def validate_storage_media_type(media_type: str) -> str:
+    """Validate bounded single-line media-type metadata."""
+
+    if (
+        not media_type
+        or media_type != media_type.strip()
+        or len(media_type) > 255
+        or any(character in media_type for character in ("\x00", "\r", "\n"))
+    ):
+        raise ValueError("media_type must be trimmed single-line text")
+    return media_type
+
+
 class UploadStore(Protocol):
-    """Storage boundary for replacing the local in-memory implementation."""
+    """Ephemeral input storage; uploads are not part of durable run history."""
 
     @property
     def max_upload_bytes(self) -> int: ...
@@ -81,6 +108,10 @@ class UploadStore(Protocol):
     ) -> UploadSnapshot: ...
 
     async def get(self, upload_id: str) -> UploadedArtifact: ...
+
+    async def delete(self, upload_id: str) -> None: ...
+
+    async def stats(self) -> dict[str, int]: ...
 
 
 class InMemoryUploadStore:
@@ -125,21 +156,8 @@ class InMemoryUploadStore:
         filename: str,
         media_type: str,
     ) -> UploadSnapshot:
-        if (
-            not filename
-            or filename != filename.strip()
-            or len(filename) > 255
-            or filename in {".", ".."}
-            or any(character in filename for character in ("/", "\\", "\x00", "\r", "\n"))
-        ):
-            raise ValueError("filename must be a safe basename of at most 255 characters")
-        if (
-            not media_type
-            or media_type != media_type.strip()
-            or len(media_type) > 255
-            or any(character in media_type for character in ("\x00", "\r", "\n"))
-        ):
-            raise ValueError("media_type must be trimmed single-line text")
+        validate_storage_filename(filename)
+        validate_storage_media_type(media_type)
         if len(content) > self._max_upload_bytes:
             raise UploadTooLargeError("upload exceeds configured size limit")
         now = self._clock()
@@ -191,9 +209,7 @@ class InMemoryUploadStore:
 
     def _prune_expired_locked(self, now: datetime) -> None:
         expired = [
-            upload_id
-            for upload_id, record in self._records.items()
-            if now >= record.expires_at
+            upload_id for upload_id, record in self._records.items() if now >= record.expires_at
         ]
         for upload_id in expired:
             record = self._records.pop(upload_id)
@@ -221,4 +237,6 @@ __all__ = [
     "UploadTooLargeError",
     "UploadStore",
     "UploadedArtifact",
+    "validate_storage_filename",
+    "validate_storage_media_type",
 ]

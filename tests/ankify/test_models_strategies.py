@@ -3,8 +3,11 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from agent_core.ownership import FieldOwnership, OwnershipSurface
 from agent_core.providers.codex_schema import validate_codex_output_schema
+from agent_core.registry import PluginRegistry
 from ankify.models import (
+    AnkifyResultDocument,
     AnkifyRunOptions,
     GuideProfile,
     JuniorExamStage,
@@ -119,5 +122,31 @@ def test_plugin_manifest_and_bundled_skill_are_stable() -> None:
     assert plugin.manifest.plugin_id == "ankify"
     assert plugin.manifest.version == "0.1.0"
     assert plugin.manifest.options_model is AnkifyRunOptions
+    assert plugin.manifest.artifact_content_model is AnkifyResultDocument
     assert bundled_skill_path().is_file()
     assert load_bundled_skill().name == "ankify-authoring"
+
+
+def test_plugin_manifest_exposes_validated_field_ownership() -> None:
+    descriptor = PluginRegistry().register("ankify", AnkifyPlugin)
+
+    assert descriptor.artifact_content_schema is not None
+    assert descriptor.artifact_content_schema["title"] == "AnkifyResultDocument"
+    assert descriptor.ownership is not None
+    fields = {(field.surface, field.path): field.ownership for field in descriptor.ownership.fields}
+    assert fields[(OwnershipSurface.INPUT, "/content")] is FieldOwnership.USER_CHOICE
+    assert fields[(OwnershipSurface.OPTIONS, "/study_purpose")] is FieldOwnership.USER_CHOICE
+    assert (
+        fields[(OwnershipSurface.ARTIFACT_CONTENT, "/cards/-/front")] is FieldOwnership.AI_CANDIDATE
+    )
+    assert (
+        fields[(OwnershipSurface.ARTIFACT_CONTENT, "/cards/-/tags")] is FieldOwnership.AI_CANDIDATE
+    )
+    assert (
+        fields[(OwnershipSurface.ARTIFACT_CONTENT, "/cards/-/note_id")]
+        is FieldOwnership.PROGRAM_FACT
+    )
+    assert (
+        fields[(OwnershipSurface.ARTIFACT_CONTENT, "/cards/-/note_type")]
+        is FieldOwnership.POLICY_LOCKED
+    )

@@ -124,9 +124,7 @@ class EvalRuleResult(StrictFrozenModel):
 
     @model_validator(mode="after")
     def validate_passed(self) -> EvalRuleResult:
-        expected = not any(
-            issue.severity is EvalIssueSeverity.FAILURE for issue in self.issues
-        )
+        expected = not any(issue.severity is EvalIssueSeverity.FAILURE for issue in self.issues)
         if self.passed is not expected:
             raise ValueError("passed must reflect the absence of hard rule failures")
         return self

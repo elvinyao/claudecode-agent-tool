@@ -41,8 +41,7 @@ def _safe_tag(value: str) -> bool:
         and value == value.strip()
         and len(value) <= 64
         and not any(
-            character.isspace() or character in {",", "\r", "\n", "\x00"}
-            for character in value
+            character.isspace() or character in {",", "\r", "\n", "\x00"} for character in value
         )
     )
 
@@ -238,9 +237,7 @@ def validate_candidate(
             ),
         )
 
-    tags = tuple(
-        dict.fromkeys((*parsed.strategy.default_tags, *candidate.suggested_tags))
-    )
+    tags = tuple(dict.fromkeys((*parsed.strategy.default_tags, *candidate.suggested_tags)))
     return CandidateDecision(
         card=AnkifyCard(
             note_id=_stable_note_id(parsed, candidate),

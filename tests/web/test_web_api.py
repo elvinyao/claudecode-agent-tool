@@ -8,13 +8,27 @@ from threading import Event
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient as FastApiTestClient
 from pydantic import BaseModel, ValidationError
 
 from agent_core.io import HttpsIoError, HttpsIoPolicy, PublishReceipt
-from agent_core.jobs import JobContext, JobExecutionResult, RunArtifact
+from agent_core.jobs import InMemoryJobManager, JobContext, JobExecutionResult, RunArtifact
 from agent_core.uploads import InMemoryUploadStore
-from agent_core.web import ResolvedRunRequest, WebSettings, create_app
+from agent_core.web import (
+    AdmittedRunRequest,
+    ResolvedRunRequest,
+    UploadedSource,
+    WebSettings,
+    create_app,
+)
+
+
+class TestClient(FastApiTestClient):
+    """Use a valid Host header for the tokenless local-server test default."""
+
+    def __init__(self, app: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("base_url", "http://127.0.0.1")
+        super().__init__(app, **kwargs)
 
 
 class DemoInput(BaseModel):
@@ -77,9 +91,7 @@ def wait_for_terminal(client: TestClient, run_id: str) -> dict[str, Any]:
 
 
 def test_liveness_readiness_plugins_schema_and_inline_run() -> None:
-    app = create_app(
-        registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor
-    )
+    app = create_app(registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor)
 
     with TestClient(app) as client:
         assert client.get("/livez").json() == {
@@ -112,8 +124,10 @@ def test_liveness_readiness_plugins_schema_and_inline_run() -> None:
         )
         assert submitted.status_code == 202
         run_id = submitted.json()["run_id"]
+        assert submitted.json()["plugin_version"] == "0.1.0"
         terminal = wait_for_terminal(client, run_id)
         assert terminal["status"] == "succeeded"
+        assert terminal["plugin_version"] == "0.1.0"
         assert terminal["artifact_url"].endswith(f"/{run_id}/artifact")
 
         artifact = client.get(terminal["artifact_url"])
@@ -167,10 +181,174 @@ def test_readiness_fails_closed_without_providers_and_unknown_provider_is_reject
     assert unknown.json()["detail"] == "Provider not found"
 
 
-def test_request_cannot_expand_action_or_web_policy() -> None:
-    app = create_app(
-        registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor
+def test_workbench_config_is_non_secret_and_validate_does_not_enqueue() -> None:
+    class PluginOptions(BaseModel):
+        required_count: int
+
+    def preflight(request: Any) -> None:
+        PluginOptions.model_validate(request.options.parameters, strict=True)
+
+    settings = WebSettings(
+        api_token="DO-NOT-RETURN",
+        allow_web_enrichment=True,
+        max_action_mode="dry_run",
+        max_upload_bytes=1234,
+        max_upload_total_bytes=5678,
+        https_policy=HttpsIoPolicy(
+            allowed_servers={"private.example:443"},
+            max_input_bytes=2345,
+        ),
     )
+    app = create_app(
+        registry=DemoRegistry(),
+        provider_names=("codex", "claude"),
+        run_executor=echo_executor,
+        run_preflight=preflight,
+        settings=settings,
+    )
+    headers = {"Authorization": "Bearer DO-NOT-RETURN"}
+
+    with TestClient(app) as client:
+        config = client.get("/api/v1/workbench/config", headers=headers)
+        valid = client.post(
+            "/api/v1/runs/validate",
+            headers=headers,
+            json={
+                "plugin_id": "demo",
+                "provider": "codex",
+                "source": {"type": "inline", "data": {}},
+                "options": {"parameters": {"required_count": 2}},
+            },
+        )
+        invalid = client.post(
+            "/api/v1/runs/validate",
+            headers=headers,
+            json={
+                "plugin_id": "demo",
+                "provider": "codex",
+                "source": {"type": "inline", "data": {}},
+                "options": {"parameters": {}},
+            },
+        )
+        runs = client.get("/api/v1/runs", headers=headers)
+
+    assert config.status_code == 200
+    assert config.json() == {
+        "providers": ["claude", "codex"],
+        "allow_web_enrichment": True,
+        "max_action_mode": "dry_run",
+        "max_upload_bytes": 1234,
+        "max_input_bytes": 2345,
+        "durable_history": False,
+        "preflight_available": True,
+    }
+    assert "DO-NOT-RETURN" not in config.text
+    assert "private.example" not in config.text
+    assert valid.status_code == 204
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"][0]["loc"] == ["options", "required_count"]
+    assert runs.json()["count"] == 0
+
+
+def test_workbench_assets_are_public_but_api_configuration_remains_protected() -> None:
+    app = create_app(
+        registry=DemoRegistry(),
+        provider_names=("codex",),
+        run_executor=echo_executor,
+        settings=WebSettings(host="0.0.0.0", api_token="secret-token"),
+    )
+
+    with TestClient(app) as client:
+        index = client.get("/workbench")
+        styles = client.get("/workbench/workbench.css")
+        script = client.get("/workbench/workbench.js")
+        protected = client.get("/api/v1/workbench/config")
+
+    assert index.status_code == styles.status_code == script.status_code == 200
+    assert index.headers["content-security-policy"].startswith("default-src 'none'")
+    assert index.headers["x-content-type-options"] == "nosniff"
+    assert index.headers["cache-control"] == "no-store"
+    assert index.headers["etag"].startswith('"sha256-')
+    assert styles.headers["content-type"].startswith("text/css")
+    assert script.headers["content-type"].startswith("text/javascript")
+    assert protected.status_code == 401
+
+
+def test_validate_fails_explicitly_when_plugin_preflight_is_not_configured() -> None:
+    app = create_app(registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor)
+
+    with TestClient(app) as client:
+        config = client.get("/api/v1/workbench/config")
+        response = client.post(
+            "/api/v1/runs/validate",
+            json={
+                "plugin_id": "demo",
+                "provider": "codex",
+                "source": {"type": "inline", "data": {}},
+            },
+        )
+
+    assert config.json()["preflight_available"] is False
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Plugin preflight validation is unavailable"
+
+
+def test_data_dir_reopens_safe_run_history_and_artifact(tmp_path) -> None:
+    history = tmp_path / "run-history"
+    settings = WebSettings(data_dir=history, worker_count=1)
+    request = {
+        "plugin_id": "demo",
+        "provider": "codex",
+        "source": {"type": "inline", "data": {"value": "persisted"}},
+    }
+    first_app = create_app(
+        registry=DemoRegistry(),
+        provider_names=("codex",),
+        run_executor=echo_executor,
+        settings=settings,
+    )
+
+    with TestClient(first_app) as client:
+        config = client.get("/api/v1/workbench/config")
+        assert config.json()["durable_history"] is True
+        submitted = client.post("/api/v1/runs", json=request)
+        terminal = wait_for_terminal(client, submitted.json()["run_id"])
+        run_id = terminal["run_id"]
+
+    second_app = create_app(
+        registry=DemoRegistry(),
+        provider_names=("codex",),
+        run_executor=echo_executor,
+        settings=settings,
+    )
+    with TestClient(second_app) as client:
+        reopened = client.get(f"/api/v1/runs/{run_id}")
+        artifact = client.get(f"/api/v1/runs/{run_id}/artifact")
+
+    assert reopened.status_code == 200
+    assert reopened.json()["status"] == "succeeded"
+    assert reopened.json()["plugin_version"] == "0.1.0"
+    assert artifact.status_code == 200
+    assert artifact.json() == {"value": "persisted"}
+
+
+def test_data_dir_cannot_silently_override_an_injected_manager(tmp_path) -> None:
+    async def execute_admitted(_payload: Any, _context: JobContext) -> JobExecutionResult:
+        return JobExecutionResult(artifact=RunArtifact(b"ok"))
+
+    manager = InMemoryJobManager(execute_admitted)
+
+    with pytest.raises(ValueError, match="data_dir"):
+        create_app(
+            registry=DemoRegistry(),
+            provider_names=("codex",),
+            job_manager=manager,
+            settings=WebSettings(data_dir=tmp_path / "history"),
+        )
+
+
+def test_request_cannot_expand_action_or_web_policy() -> None:
+    app = create_app(registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor)
 
     with TestClient(app) as client:
         dry_run = client.post(
@@ -206,9 +384,7 @@ def test_request_cannot_expand_action_or_web_policy() -> None:
     ],
 )
 def test_source_is_strict_and_web_has_no_local_file_variant(source: dict[str, Any]) -> None:
-    app = create_app(
-        registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor
-    )
+    app = create_app(registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor)
 
     with TestClient(app) as client:
         response = client.post(
@@ -220,9 +396,7 @@ def test_source_is_strict_and_web_has_no_local_file_variant(source: dict[str, An
 
 
 def test_validation_errors_never_echo_secret_url_input() -> None:
-    app = create_app(
-        registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor
-    )
+    app = create_app(registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor)
     secret = "DO-NOT-ECHO-VALIDATION-SECRET"
 
     with TestClient(app) as client:
@@ -244,9 +418,7 @@ def test_validation_errors_never_echo_secret_url_input() -> None:
 
 
 def test_unknown_request_fields_and_unknown_plugin_are_rejected() -> None:
-    app = create_app(
-        registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor
-    )
+    app = create_app(registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor)
 
     with TestClient(app) as client:
         extra = client.post(
@@ -319,11 +491,9 @@ def test_non_loopback_bind_requires_bearer_token_and_auth_is_constant_shape() ->
         settings=settings,
     )
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url="https://agents.enterprise.example") as client:
         unauthorized = client.get("/api/v1/plugins")
-        wrong = client.get(
-            "/api/v1/plugins", headers={"Authorization": "Bearer wrong-secret"}
-        )
+        wrong = client.get("/api/v1/plugins", headers={"Authorization": "Bearer wrong-secret"})
         authorized = client.get(
             "/api/v1/plugins",
             headers={"Authorization": "Bearer very-secret-token"},
@@ -333,6 +503,76 @@ def test_non_loopback_bind_requires_bearer_token_and_auth_is_constant_shape() ->
     assert wrong.status_code == 401
     assert "very-secret-token" not in unauthorized.text + wrong.text
     assert authorized.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "host",
+    (
+        "localhost:8000",
+        "127.0.0.1:8000",
+        "[::1]:8000",
+        "anki.localhost:8000",
+        "ANKI.LOCALHOST.:8000",
+    ),
+)
+def test_tokenless_local_server_accepts_only_loopback_hostnames(host: str) -> None:
+    app = create_app(
+        registry=DemoRegistry(),
+        provider_names=("codex",),
+        run_executor=echo_executor,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/plugins", headers={"Host": host})
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "host",
+    (
+        "attacker.example",
+        "localhost.attacker.example",
+        "localhost@attacker.example",
+        "localhost:99999",
+        "localhost:",
+        "[::1%25en0]:8000",
+    ),
+)
+def test_tokenless_local_server_rejects_dns_rebinding_host(host: str) -> None:
+    app = create_app(
+        registry=DemoRegistry(),
+        provider_names=("codex",),
+        run_executor=echo_executor,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/livez", headers={"Host": host})
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid Host header"}
+    assert host not in response.text
+
+
+def test_tokenless_local_server_rejects_duplicate_host_headers() -> None:
+    app = create_app(
+        registry=DemoRegistry(),
+        provider_names=("codex",),
+        run_executor=echo_executor,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/livez",
+            headers=[("Host", "localhost"), ("Host", "attacker.example")],
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid Host header"}
+
+
+def test_localhost_subdomain_can_be_configured_without_a_token() -> None:
+    assert WebSettings(host="anki.localhost").api_token is None
 
 
 class FakeHttpsIo:
@@ -364,7 +604,7 @@ def test_https_source_and_sink_are_injected_and_signed_urls_are_not_echoed() -> 
         registry=DemoRegistry(),
         provider_names=("codex",),
         run_executor=echo_executor,
-        io_client=fake_io,  # type: ignore[arg-type]
+        io_client=fake_io,  # ty: ignore[invalid-argument-type]  # Minimal transport double.
         close_io_on_shutdown=False,
     )
 
@@ -390,9 +630,7 @@ def test_https_source_and_sink_are_injected_and_signed_urls_are_not_echoed() -> 
     assert terminal["status"] == "succeeded"
     assert "SOURCE-SECRET" not in str(terminal)
     assert "SINK-SECRET" not in str(terminal)
-    assert fake_io.fetched == [
-        "https://allowed.example/input?signature=SOURCE-SECRET"
-    ]
+    assert fake_io.fetched == ["https://allowed.example/input?signature=SOURCE-SECRET"]
     assert fake_io.published[0][0].endswith("signature=SINK-SECRET")
     assert fake_io.published[0][1] == b'{"remote":true}'
 
@@ -435,9 +673,7 @@ def test_cancel_endpoint_cancels_a_running_job() -> None:
         await asyncio.Event().wait()
         return JobExecutionResult(artifact=RunArtifact(b"never"))
 
-    app = create_app(
-        registry=DemoRegistry(), provider_names=("codex",), run_executor=slow_executor
-    )
+    app = create_app(registry=DemoRegistry(), provider_names=("codex",), run_executor=slow_executor)
     with TestClient(app) as client:
         submitted = client.post(
             "/api/v1/runs",
@@ -462,9 +698,7 @@ def test_cancel_endpoint_cancels_a_running_job() -> None:
 
 
 def test_upload_source_list_and_explicit_rerun_lineage() -> None:
-    app = create_app(
-        registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor
-    )
+    app = create_app(registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor)
 
     with TestClient(app) as client:
         uploaded = client.post(
@@ -614,10 +848,56 @@ def test_accepted_upload_is_snapshotted_while_waiting_in_queue() -> None:
     assert artifact.content == b"retained"
 
 
-def test_sse_replays_safe_lifecycle_events_and_resumes_from_cursor() -> None:
+def test_injected_job_manager_receives_the_same_admitted_upload_contract() -> None:
+    seen: list[AdmittedRunRequest] = []
+
+    async def execute_admitted(
+        payload: AdmittedRunRequest,
+        context: JobContext,
+    ) -> JobExecutionResult:
+        context.raise_if_cancelled()
+        seen.append(payload)
+        assert payload.uploaded_artifact is not None
+        return JobExecutionResult(
+            artifact=RunArtifact(
+                payload.uploaded_artifact.content,
+                media_type=payload.uploaded_artifact.media_type,
+                filename="copy.txt",
+            )
+        )
+
+    manager = InMemoryJobManager(execute_admitted, worker_count=1)
     app = create_app(
-        registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor
+        registry=DemoRegistry(),
+        provider_names=("codex",),
+        job_manager=manager,
     )
+
+    with TestClient(app) as client:
+        upload = client.post(
+            "/api/v1/uploads",
+            files={"file": ("source.txt", b"stable snapshot", "text/plain")},
+        ).json()
+        submitted = client.post(
+            "/api/v1/runs",
+            json={
+                "plugin_id": "demo",
+                "provider": "codex",
+                "source": {"type": "upload", "upload_id": upload["upload_id"]},
+            },
+        )
+        terminal = wait_for_terminal(client, submitted.json()["run_id"])
+        artifact = client.get(terminal["artifact_url"])
+
+    assert len(seen) == 1
+    source = seen[0].request.source
+    assert isinstance(source, UploadedSource)
+    assert source.upload_id == upload["upload_id"]
+    assert artifact.content == b"stable snapshot"
+
+
+def test_sse_replays_safe_lifecycle_events_and_resumes_from_cursor() -> None:
+    app = create_app(registry=DemoRegistry(), provider_names=("codex",), run_executor=echo_executor)
 
     with TestClient(app) as client:
         submitted = client.post(
@@ -672,9 +952,7 @@ def test_rerun_requires_terminal_parent_and_same_plugin() -> None:
         await asyncio.Event().wait()
         return JobExecutionResult(artifact=RunArtifact(b"never"))
 
-    app = create_app(
-        registry=DemoRegistry(), provider_names=("codex",), run_executor=slow_executor
-    )
+    app = create_app(registry=DemoRegistry(), provider_names=("codex",), run_executor=slow_executor)
     spec = {
         "plugin_id": "demo",
         "provider": "codex",

@@ -23,9 +23,7 @@ def test_antigravity_cli_is_standalone_without_exposing_absolute_path(
 
     assert result.status is ProviderReadiness.READY
     assert result.runtime == "cli"
-    assert result.detail == (
-        "agy executable is available via AGENT_CORE_ANTIGRAVITY_BIN."
-    )
+    assert result.detail == ("agy executable is available via AGENT_CORE_ANTIGRAVITY_BIN.")
     assert str(tmp_path) not in result.detail
 
 
@@ -41,9 +39,7 @@ def test_codex_cli_is_reported_only_with_required_sdk(monkeypatch) -> None:
 
     assert result.status is ProviderReadiness.READY
     assert result.runtime == "sdk+cli"
-    assert result.detail == (
-        "openai-codex 0.144.4 is installed; codex is available via PATH."
-    )
+    assert result.detail == ("openai-codex 0.144.4 is installed; codex is available via PATH.")
 
 
 @pytest.mark.parametrize(
@@ -121,9 +117,7 @@ def test_diagnostic_reports_missing_runtime_with_actionable_install_hint(
 
     assert result.status is ProviderReadiness.UNAVAILABLE
     assert result.runtime == "none"
-    assert result.detail == (
-        "Install agent-core[antigravity] or make agy available on PATH."
-    )
+    assert result.detail == ("Install agent-core[antigravity] or make agy available on PATH.")
 
 
 def test_diagnostic_fails_closed_for_invalid_explicit_override(monkeypatch) -> None:
@@ -140,9 +134,7 @@ def test_diagnostic_fails_closed_for_invalid_explicit_override(monkeypatch) -> N
 
     assert result.status is ProviderReadiness.MISCONFIGURED
     assert result.runtime == "cli"
-    assert result.detail == (
-        "AGENT_CORE_CLAUDE_BIN does not point to an existing executable"
-    )
+    assert result.detail == ("AGENT_CORE_CLAUDE_BIN does not point to an existing executable")
 
 
 def test_custom_provider_is_explicitly_unchecked() -> None:

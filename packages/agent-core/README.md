@@ -12,7 +12,9 @@
 - 每次 run 新建实例的插件/Provider factory；
 - 受限 Skill 校验和隔离 staging；
 - Codex/Claude/Antigravity adapter、metadata-only 审计、通用 CLI；
-- 可选的有界 FastAPI Job API 和 SSRF-resistant HTTPS I/O。
+- 可选的有界 FastAPI Job API、SSRF-resistant HTTPS I/O 和零构建 schema-driven Workbench；
+- 机器可读的字段 Ownership contract 与安全 Workflow 进度事件；
+- 可选 `serve --data-dir PATH` 本地 SQLite/filesystem 历史与 Artifact 存储。
 
 基础包只依赖 Pydantic。包已经发布到你的 index 或使用本地 wheel 时，可以按需安装：
 
@@ -41,3 +43,7 @@ Codex structured-output schema 会在请求前递归预检：每个 object 的 `
 [项目主 README](https://github.com/elvinyao/claudecode-agent-tool/blob/dev/README.md)。完全不依赖
 Trivy 的参考插件见
 [Toy plugin fixture](https://github.com/elvinyao/claudecode-agent-tool/tree/dev/tests/fixtures/toy-plugin)。
+
+`--data-dir` 只提供单进程本地历史，不是 durable queue/checkpoint；正常关闭会取消未终态 run，
+异常中断后残留的 `queued` / `running` 记录会在下次启动变成 `failed` + `worker_interrupted`，不会
+自动 resume。当前也尚无 Approval、RBAC、任务聊天补丁和 Artifact 版本审核。

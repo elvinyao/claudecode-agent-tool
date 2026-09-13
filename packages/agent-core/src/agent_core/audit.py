@@ -296,8 +296,7 @@ class AuditLogger:
         combined = {**defaults, **supplied}
         try:
             metadata_items = tuple(
-                AuditMetadataItem(key=key, value=value)
-                for key, value in sorted(combined.items())
+                AuditMetadataItem(key=key, value=value) for key, value in sorted(combined.items())
             )
         except (TypeError, ValueError) as exc:
             raise AuditMetadataError(str(exc)) from exc

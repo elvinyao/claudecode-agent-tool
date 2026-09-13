@@ -75,9 +75,7 @@ def check_generated_cards(
                 )
 
     if _enabled(fixture, EvalDomainCheck.COUNT_RANGE) and not (
-        fixture.expected_card_count.minimum
-        <= len(card_list)
-        <= fixture.expected_card_count.maximum
+        fixture.expected_card_count.minimum <= len(card_list) <= fixture.expected_card_count.maximum
     ):
         _issue(
             issues,
@@ -93,16 +91,14 @@ def check_generated_cards(
                 _issue(
                     issues,
                     EvalDomainCheck.LENGTH,
-                    f"Front has {len(card.front)} characters; limit is "
-                    f"{fixture.max_front_length}.",
+                    f"Front has {len(card.front)} characters; limit is {fixture.max_front_length}.",
                     card_index=index,
                 )
             if len(card.back) > fixture.max_back_length:
                 _issue(
                     issues,
                     EvalDomainCheck.LENGTH,
-                    f"Back has {len(card.back)} characters; limit is "
-                    f"{fixture.max_back_length}.",
+                    f"Back has {len(card.back)} characters; limit is {fixture.max_back_length}.",
                     card_index=index,
                 )
 
@@ -183,9 +179,7 @@ def check_generated_cards(
                     break
 
     return EvalRuleResult(
-        passed=not any(
-            issue.severity is EvalIssueSeverity.FAILURE for issue in issues
-        ),
+        passed=not any(issue.severity is EvalIssueSeverity.FAILURE for issue in issues),
         issues=tuple(issues),
     )
 

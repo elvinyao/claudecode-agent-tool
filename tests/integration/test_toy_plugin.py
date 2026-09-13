@@ -14,9 +14,9 @@ from typing import Any
 
 import pytest
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ModuleNotFoundError:  # Python 3.10 compatibility
+else:
     import tomli as tomllib
 
 from agent_core.contracts import AgentRequest, ProviderResult
@@ -103,9 +103,7 @@ def test_standalone_package_declares_a_loadable_domain_entry_point(
     descriptor = registry.get("toy")
     assert descriptor.source == f"entrypoint:{target}"
     assert descriptor.display_name == "Toy Text Reverser"
-    assert {"content", "filename", "options"} <= set(
-        descriptor.input_schema["properties"]
-    )
+    assert {"content", "filename", "options"} <= set(descriptor.input_schema["properties"])
     assert "preserve_case" in descriptor.options_schema["properties"]
     assert "format_sentinel" in descriptor.output_schema["properties"]
 
@@ -115,9 +113,7 @@ async def test_toy_workflow_passes_prompt_and_schema_and_produces_artifact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     toy = _load_toy_module(monkeypatch)
-    target = _toy_project()["project"]["entry-points"][
-        DOMAIN_PLUGIN_ENTRYPOINT_GROUP
-    ]["toy"]
+    target = _toy_project()["project"]["entry-points"][DOMAIN_PLUGIN_ENTRYPOINT_GROUP]["toy"]
     registry = PluginRegistry.from_entry_points(
         entry_points=(
             EntryPoint(
@@ -167,9 +163,7 @@ async def test_toy_workflow_passes_prompt_and_schema_and_produces_artifact(
     assert artifact.format_sentinel == "TOY_ARTIFACT_V1"
     records = json.loads(artifact.content)
     assert [record["original_text"] for record in records] == list(phrases)
-    assert [record["reversed_text"] for record in records] == [
-        phrase[::-1] for phrase in phrases
-    ]
+    assert [record["reversed_text"] for record in records] == [phrase[::-1] for phrase in phrases]
 
 
 def test_core_and_toy_run_when_trivy_imports_are_blocked() -> None:
@@ -180,11 +174,7 @@ def test_core_and_toy_run_when_trivy_imports_are_blocked() -> None:
             for node in ast.walk(tree)
             if isinstance(node, ast.Import)
             for imported in node.names
-        ] + [
-            node.module or ""
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-        ]
+        ] + [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
         assert not any(
             name == "trivy_ai_report" or name.startswith("trivy_ai_report.")
             for name in imported_modules

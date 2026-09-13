@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
@@ -77,7 +78,7 @@ async def test_upload_store_enforces_item_record_and_total_capacity() -> None:
         ({"ttl_seconds": 0}, "ttl_seconds"),
     ],
 )
-def test_upload_store_rejects_invalid_limits(kwargs: dict[str, int], message: str) -> None:
+def test_upload_store_rejects_invalid_limits(kwargs: dict[str, Any], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         InMemoryUploadStore(**kwargs)
 

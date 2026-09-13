@@ -125,10 +125,7 @@ def _json_blocks(value: Any) -> tuple[tuple[tuple[str, ...], str], ...]:
 
 
 def _canonical_document(blocks: Iterable[tuple[tuple[str, ...], str]]) -> bytes:
-    payload = [
-        {"heading_path": list(heading_path), "text": text}
-        for heading_path, text in blocks
-    ]
+    payload = [{"heading_path": list(heading_path), "text": text} for heading_path, text in blocks]
     return json.dumps(
         payload,
         ensure_ascii=False,
@@ -157,9 +154,7 @@ def normalize_source(raw: bytes, *, filename: str) -> NormalizedSource:
     elif suffix in {"", ".txt", ".md", ".markdown"}:
         raw_blocks = _markdown_blocks(text)
     else:
-        raise AnkifySourceError(
-            "Ankify source filename must end in .txt, .md, .markdown, or .json"
-        )
+        raise AnkifySourceError("Ankify source filename must end in .txt, .md, .markdown, or .json")
     if not raw_blocks:
         raise AnkifySourceError("Ankify source contains no non-empty text blocks")
 

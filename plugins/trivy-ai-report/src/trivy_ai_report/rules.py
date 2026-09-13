@@ -53,9 +53,7 @@ def _preferred_fixed_version(finding: Finding) -> str | None:
     installed = _numeric_prefix(finding.installed_version)
     if len(installed) >= 2:
         same_line = [
-            candidate
-            for candidate in versions
-            if _numeric_prefix(candidate)[:2] == installed[:2]
+            candidate for candidate in versions if _numeric_prefix(candidate)[:2] == installed[:2]
         ]
         if same_line:
             return same_line[0]
@@ -74,8 +72,7 @@ def base_recommendation(finding: Finding, reason: str | None = None) -> Recommen
             finding_id=finding.finding_id,
             category=category,
             title_zh=(
-                f"迁移出已停止支持的 {finding.os_family or 'OS'} "
-                f"{finding.os_version or ''}"
+                f"迁移出已停止支持的 {finding.os_family or 'OS'} {finding.os_version or ''}"
             ).strip(),
             rationale_zh=(
                 "Trivy 将该操作系统标记为 EOSL。单独升级软件包不能恢复发行版级安全支持；"
@@ -116,9 +113,7 @@ def base_recommendation(finding: Finding, reason: str | None = None) -> Recommen
             ],
             validation_zh=["重新运行 Trivy，并确认 InstalledVersion 已进入修复范围。"],
             recommended_version=preferred,
-            version_source=(
-                VersionSource.TRIVY_FIXED_VERSION if preferred else VersionSource.NONE
-            ),
+            version_source=(VersionSource.TRIVY_FIXED_VERSION if preferred else VersionSource.NONE),
             confidence="high" if preferred else "medium",
             research_status=ResearchStatus.NOT_REQUESTED,
         )
@@ -168,8 +163,7 @@ def base_recommendation(finding: Finding, reason: str | None = None) -> Recommen
             category=category,
             title_zh=f"升级依赖 {finding.package_name}",
             rationale_zh=(
-                f"Trivy 将状态标记为 fixed，并给出 FixedVersion {preferred}."
-                f"{reason_suffix}"
+                f"Trivy 将状态标记为 fixed，并给出 FixedVersion {preferred}.{reason_suffix}"
             ),
             actions_zh=[
                 "通过项目的依赖清单或锁文件升级到修复版本，重新解析依赖并构建产物。",
@@ -217,9 +211,7 @@ def _canonical_trivy_version(finding: Finding, proposed: str | None) -> str | No
     return matches[0]
 
 
-def validate_recommendation(
-    finding: Finding, recommendation: Recommendation
-) -> Recommendation:
+def validate_recommendation(finding: Finding, recommendation: Recommendation) -> Recommendation:
     """Cross-check one structured suggestion and normalize version provenance."""
 
     if recommendation.finding_id != finding.finding_id:
@@ -255,9 +247,7 @@ def validate_recommendation(
             or recommendation.research_status is not ResearchStatus.ENRICHED
             or not recommendation.evidence
         ):
-            raise RecommendationValidationError(
-                "厂商版本建议必须有联网核验状态、版本和 HTTPS 证据"
-            )
+            raise RecommendationValidationError("厂商版本建议必须有联网核验状态、版本和 HTTPS 证据")
         return recommendation
 
     if recommendation.recommended_version is not None:
@@ -279,9 +269,7 @@ def merge_recommendations(
     counts = Counter(item.finding_id for item in recommendations)
     duplicate_ids = {finding_id for finding_id, count in counts.items() if count > 1}
     candidates = {
-        item.finding_id: item
-        for item in recommendations
-        if item.finding_id not in duplicate_ids
+        item.finding_id: item for item in recommendations if item.finding_id not in duplicate_ids
     }
     warnings: list[str] = []
     partial = bool(failure_reason)

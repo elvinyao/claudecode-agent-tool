@@ -19,9 +19,15 @@ from agent_core.contracts import (
     RunStatus,
     StrictFrozenModel,
 )
+from agent_core.progress import ProgressEventType, WorkflowProgress
 from agent_core.providers import ProviderCapabilities, ProviderRegistry
 from agent_core.registry import PluginManifest, PluginRegistry
-from agent_core.runtime import AgentRuntime, RuntimeConfigurationError, RuntimeInputError
+from agent_core.runtime import (
+    AgentRuntime,
+    RuntimeConfigurationError,
+    RuntimeContractError,
+    RuntimeInputError,
+)
 from agent_core.workflow import ActionNode, NodeExecutionError, TransformNode, Workflow
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -57,6 +63,88 @@ class FakeProvider:
         )
 
 
+class TypedArtifactOptions(StrictFrozenModel):
+    pass
+
+
+class TypedArtifactInput(ArtifactInput[TypedArtifactOptions]):
+    pass
+
+
+class TypedArtifactDocument(StrictFrozenModel):
+    count: int
+    label: str
+
+
+class TypedArtifactOutput(ArtifactOutput):
+    filename: str = "typed-artifact.json"
+
+
+class TypedArtifactPlugin:
+    plugin_id = "typed_artifact"
+    api_version = "1.0"
+    manifest = PluginManifest(
+        plugin_id=plugin_id,
+        api_version=api_version,
+        version="1.0.0",
+        display_name="Typed artifact contract fixture",
+        input_model=TypedArtifactInput,
+        options_model=TypedArtifactOptions,
+        output_model=TypedArtifactOutput,
+        artifact_content_model=TypedArtifactDocument,
+    )
+
+    def __init__(self, *, content: bytes, media_type: str) -> None:
+        self.content = content
+        self.media_type = media_type
+
+    def create_workflow(self, runtime: Any) -> Workflow:
+        return Workflow(
+            input_type=TypedArtifactInput,
+            nodes=(
+                TransformNode(
+                    id="render",
+                    input_type=TypedArtifactInput,
+                    output_type=TypedArtifactOutput,
+                    handler=lambda _value, _context: TypedArtifactOutput(
+                        content=self.content,
+                        media_type=self.media_type,
+                    ),
+                ),
+            ),
+        )
+
+
+def typed_artifact_runtime(
+    *,
+    content: bytes,
+    media_type: str = "application/json",
+    audit_logger: AuditLogger | None = None,
+) -> AgentRuntime:
+    plugin_registry = PluginRegistry()
+    plugin_registry.register(
+        "typed_artifact",
+        lambda: TypedArtifactPlugin(content=content, media_type=media_type),
+    )
+    provider_registry = ProviderRegistry()
+    provider_registry.register("fake", lambda **_kwargs: FakeProvider())
+    return AgentRuntime(
+        plugin_registry,
+        provider_registry=provider_registry,
+        audit_logger=audit_logger,
+    )
+
+
+async def run_typed_artifact(runtime: AgentRuntime, *, run_id: str) -> Any:
+    return await runtime.run(
+        plugin_id="typed_artifact",
+        provider="fake",
+        input_bytes=b"source",
+        options={},
+        run_id=run_id,
+    )
+
+
 def runtime_fixture(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, AgentRuntime, list[Any], Any]:
     monkeypatch.syspath_prepend(str(TOY_SOURCE))
     toy = importlib.import_module("toy_agent_plugin.plugin")
@@ -89,6 +177,10 @@ async def test_runtime_executes_raw_artifact_through_toy_plugin_and_audits(
 ) -> None:
     toy, runtime, providers, sink = runtime_fixture(monkeypatch)
     raw = json.dumps({"phrases": ["Codex", "通用框架"]}).encode("utf-8")
+    progress: list[WorkflowProgress] = []
+
+    async def collect(event: WorkflowProgress) -> None:
+        progress.append(event)
 
     result = await runtime.run(
         plugin_id="toy",
@@ -98,6 +190,7 @@ async def test_runtime_executes_raw_artifact_through_toy_plugin_and_audits(
         options={"preserve_case": True},
         model="fake-v1",
         run_id="runtime-success",
+        progress_sink=collect,
     )
 
     assert result.status is RunStatus.SUCCEEDED
@@ -113,10 +206,106 @@ async def test_runtime_executes_raw_artifact_through_toy_plugin_and_audits(
     assert records[-1].event_type is AuditEventType.RUN_COMPLETED
     assert records[-1].status is RunStatus.SUCCEEDED
     assert sum(item.event_type is AuditEventType.PROVIDER_REQUESTED for item in records) == 2
+    assert sum(item.event_type is AuditEventType.NODE_STARTED for item in records) == 4
     assert sum(item.event_type is AuditEventType.NODE_COMPLETED for item in records) == 4
+    assert progress[0].type is ProgressEventType.STEP_STARTED
+    assert any(item.type is ProgressEventType.AGENT_BATCH_STARTED for item in progress)
+    assert progress[-1].type is ProgressEventType.STEP_COMPLETED
     persisted_shape = "\n".join(item.model_dump_json() for item in records)
     assert "通用框架" not in persisted_shape
     assert "TOY_SENTINEL_PROMPT" not in persisted_shape
+
+
+@pytest.mark.asyncio
+async def test_runtime_accepts_strict_typed_json_artifact() -> None:
+    content = b'{"count":2,"label":"safe"}'
+    runtime = typed_artifact_runtime(
+        content=content,
+        media_type="application/vnd.example.result+json; charset=utf-8",
+    )
+
+    result = await run_typed_artifact(runtime, run_id="typed-artifact-valid")
+
+    assert result.artifact.content == content
+    assert result.status is RunStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_coercible_json_for_strict_artifact_schema() -> None:
+    secret = "artifact-secret-value"
+    runtime = typed_artifact_runtime(
+        content=json.dumps({"count": "2", "label": secret}).encode(),
+    )
+
+    with pytest.raises(RuntimeContractError) as captured:
+        await run_typed_artifact(runtime, run_id="typed-artifact-invalid")
+
+    assert str(captured.value) == (
+        "plugin artifact content does not satisfy its declared typed schema"
+    )
+    assert secret not in str(captured.value)
+    assert captured.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_malformed_json_without_retaining_content() -> None:
+    secret = "malformed-artifact-secret"
+    runtime = typed_artifact_runtime(
+        content=f'{{"count":2,"label":"{secret}"'.encode(),
+    )
+
+    with pytest.raises(RuntimeContractError) as captured:
+        await run_typed_artifact(runtime, run_id="typed-artifact-malformed")
+
+    assert secret not in str(captured.value)
+    assert captured.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_typed_artifact_with_non_json_media_type() -> None:
+    runtime = typed_artifact_runtime(
+        content=b'{"count":2,"label":"safe"}',
+        media_type="text/plain",
+    )
+
+    with pytest.raises(
+        RuntimeContractError,
+        match="artifact_content_model requires a JSON artifact media type",
+    ):
+        await run_typed_artifact(runtime, run_id="typed-artifact-media-type")
+
+
+@pytest.mark.asyncio
+async def test_runtime_delivers_progress_before_failing_closed_on_audit_error() -> None:
+    class ExpectedAuditError(RuntimeError):
+        pass
+
+    class FailingNodeAuditSink:
+        def emit(self, record: Any) -> None:
+            if record.event_type is AuditEventType.NODE_STARTED:
+                raise ExpectedAuditError("audit unavailable")
+
+    runtime = typed_artifact_runtime(
+        content=b'{"count":2,"label":"safe"}',
+        audit_logger=AuditLogger(FailingNodeAuditSink()),
+    )
+    progress: list[WorkflowProgress] = []
+
+    async def collect(event: WorkflowProgress) -> None:
+        progress.append(event)
+
+    with pytest.raises(ExpectedAuditError, match="audit unavailable"):
+        await runtime.run(
+            plugin_id="typed_artifact",
+            provider="fake",
+            input_bytes=b"source",
+            options={},
+            run_id="typed-artifact-audit-failure",
+            progress_sink=collect,
+        )
+
+    assert [event.type for event in progress] == [ProgressEventType.STEP_STARTED]
+    assert progress[0].node_id == "render"
 
 
 @pytest.mark.asyncio
@@ -190,7 +379,7 @@ async def test_runtime_keeps_one_artifact_alongside_gated_terminal_action() -> N
             output_model=Output,
         )
 
-        def create_workflow(self, _runtime: Any) -> Workflow:
+        def create_workflow(self, runtime: Any) -> Workflow:
             def apply(value: Input, _context: Any) -> Receipt:
                 applied.append(value.content)
                 return Receipt(applied=True)
@@ -244,11 +433,7 @@ async def test_runtime_keeps_one_artifact_alongside_gated_terminal_action() -> N
     assert disabled.artifact.content == b"safe"
     assert enabled.artifact.content == b"apply"
     assert applied == [b"apply"]
-    decisions = [
-        item
-        for item in sink.records
-        if item.event_type is AuditEventType.ACTION_DECIDED
-    ]
+    decisions = [item for item in sink.records if item.event_type is AuditEventType.ACTION_DECIDED]
     assert [item.metadata_dict["action.executed"] for item in decisions] == [
         False,
         True,

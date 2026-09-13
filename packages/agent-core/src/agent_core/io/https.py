@@ -13,7 +13,7 @@ import ipaddress
 import socket
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import httpx
@@ -82,14 +82,14 @@ class HttpsIoPolicy(BaseModel):
 
     @field_validator("allowed_servers", mode="before")
     @classmethod
-    def normalize_servers(cls, value: object) -> frozenset[str]:
+    def normalize_servers(cls, value: Any) -> frozenset[str]:
         if value is None:
             return frozenset()
         if isinstance(value, str):
             values = [value]
         else:
             try:
-                values = list(value)  # type: ignore[arg-type]
+                values = list(value)
             except TypeError as exc:
                 raise ValueError("allowed_servers must be a collection") from exc
         return frozenset(_parse_server(str(item)) for item in values)

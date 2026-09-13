@@ -146,9 +146,7 @@ class ToyPlugin:
         ) -> ToyArtifact:
             payload = [answer.model_dump(mode="json") for answer in answers]
             return ToyArtifact(
-                content=json.dumps(payload, ensure_ascii=False, sort_keys=True).encode(
-                    "utf-8"
-                ),
+                content=json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8"),
             )
 
         return Workflow(

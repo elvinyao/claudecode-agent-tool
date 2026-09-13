@@ -171,10 +171,7 @@ class AntigravityProvider(BaseProvider):
 
         if process.returncode != 0:
             error_text = stderr.decode("utf-8", errors="replace").casefold()
-            if any(
-                token in error_text
-                for token in ("auth", "credential", "login", "sign in")
-            ):
+            if any(token in error_text for token in ("auth", "credential", "login", "sign in")):
                 raise ProviderAuthenticationError(
                     "Antigravity CLI authentication failed",
                     provider=self.name,
@@ -192,10 +189,7 @@ class AntigravityProvider(BaseProvider):
                     stderr.decode("utf-8", errors="replace"),
                 )
             ).casefold()
-            if any(
-                token in error_text
-                for token in ("auth", "credential", "login", "sign in")
-            ):
+            if any(token in error_text for token in ("auth", "credential", "login", "sign in")):
                 raise ProviderAuthenticationError(
                     "Antigravity CLI authentication failed",
                     provider=self.name,
@@ -219,9 +213,7 @@ class AntigravityProvider(BaseProvider):
         sdk, policy = self._load_sdk()
         enabled_tools = [sdk.BuiltinTools.FINISH]
         if web_access:
-            enabled_tools.extend(
-                (sdk.BuiltinTools.SEARCH_WEB, sdk.BuiltinTools.READ_URL_CONTENT)
-            )
+            enabled_tools.extend((sdk.BuiltinTools.SEARCH_WEB, sdk.BuiltinTools.READ_URL_CONTENT))
         capabilities = sdk.CapabilitiesConfig(
             enable_subagents=False,
             enabled_tools=enabled_tools,

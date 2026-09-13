@@ -32,7 +32,7 @@ def test_ankify_declares_domain_entry_point() -> None:
 
     assert '[project.entry-points."agent_core.domain_plugins"]' in manifest
     assert 'ankify = "ankify.plugin:create_plugin"' in manifest
-    assert '[project.scripts]' in manifest
+    assert "[project.scripts]" in manifest
     assert 'ankify-eval = "ankify.eval.cli:main"' in manifest
 
 

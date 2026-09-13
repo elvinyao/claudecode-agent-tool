@@ -7,6 +7,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from agent_core.contracts import ActionMode, AgentCoreError, RunStatus
+from agent_core.progress import ProgressEventType, WorkflowProgress
 from agent_core.workflow import (
     ActionNode,
     AgentAttemptTimeoutError,
@@ -235,6 +236,159 @@ async def test_agent_retries_only_retryable_failures_and_uses_final_fallback() -
     assert [item.value for item in result.final_outputs[0]] == [
         "fallback:retry:ExpectedAgentFailure",
         "fallback:fallback:ExpectedAgentFailure",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_emits_safe_step_batch_retry_and_validation_progress() -> None:
+    events: list[WorkflowProgress] = []
+    attempts = 0
+
+    async def collect(event: WorkflowProgress) -> None:
+        events.append(event)
+
+    async def analyze(value: str, _context: Any) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RetryableFailure("secret source text")
+        return value.upper()
+
+    prepare = TransformNode(
+        id="prepare",
+        input_type=str,
+        output_type=str,
+        output_many=True,
+        handler=lambda value, _context: [value],
+    )
+    agent = AgentNode(
+        id="analyze",
+        depends_on=("prepare",),
+        input_type=str,
+        output_type=str,
+        handler=analyze,
+        retry_policy=RetryPolicy(
+            max_attempts=2,
+            initial_backoff_seconds=0,
+            max_backoff_seconds=0,
+            jitter_ratio=0,
+        ),
+    )
+
+    result = await Workflow((prepare, agent), input_type=str).execute(
+        "private payload",
+        run_id="progress-run",
+        progress_sink=collect,
+    )
+
+    assert result.final_outputs == (("PRIVATE PAYLOAD",),)
+    assert [event.type for event in events] == [
+        ProgressEventType.STEP_STARTED,
+        ProgressEventType.VALIDATION_COMPLETED,
+        ProgressEventType.STEP_COMPLETED,
+        ProgressEventType.STEP_STARTED,
+        ProgressEventType.AGENT_BATCH_STARTED,
+        ProgressEventType.RETRY_SCHEDULED,
+        ProgressEventType.AGENT_BATCH_COMPLETED,
+        ProgressEventType.VALIDATION_COMPLETED,
+        ProgressEventType.STEP_COMPLETED,
+    ]
+    retry = next(event for event in events if event.type is ProgressEventType.RETRY_SCHEDULED)
+    assert retry.node_id == "analyze"
+    assert retry.attempt == 1
+    assert retry.max_attempts == 2
+    assert retry.delay_seconds == 0
+    assert retry.error_code == "node_execution"
+    assert "secret source text" not in repr(events)
+    assert "private payload" not in repr(events)
+
+
+@pytest.mark.asyncio
+async def test_workflow_emits_cancelled_progress_when_active_node_is_cancelled() -> None:
+    events: list[WorkflowProgress] = []
+    handler_started = asyncio.Event()
+
+    async def collect(event: WorkflowProgress) -> None:
+        events.append(event)
+
+    async def wait_forever(value: str, _context: Any) -> str:
+        handler_started.set()
+        await asyncio.Event().wait()
+        return value
+
+    workflow = Workflow(
+        (
+            TransformNode(
+                id="waiting-step",
+                input_type=str,
+                output_type=str,
+                handler=wait_forever,
+            ),
+        ),
+        input_type=str,
+    )
+    execution = asyncio.create_task(
+        workflow.execute(
+            "sensitive input",
+            run_id="cancelled-progress-run",
+            progress_sink=collect,
+        )
+    )
+    await handler_started.wait()
+    execution.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    assert [event.type for event in events] == [
+        ProgressEventType.STEP_STARTED,
+        ProgressEventType.STEP_CANCELLED,
+    ]
+    cancelled = events[-1]
+    assert cancelled.node_id == "waiting-step"
+    assert cancelled.node_status == "cancelled"
+    assert cancelled.error_code == "node_cancelled"
+    assert cancelled.duration_ms is not None
+    assert cancelled.duration_ms >= 0
+    assert "sensitive input" not in repr(events)
+
+
+@pytest.mark.asyncio
+async def test_failing_terminal_progress_sink_does_not_mask_node_error() -> None:
+    original_error = RuntimeError("private provider failure")
+    observed: list[ProgressEventType] = []
+
+    async def fail_on_terminal_event(event: WorkflowProgress) -> None:
+        observed.append(event.type)
+        if event.type is ProgressEventType.STEP_FAILED:
+            raise OSError("progress transport is unavailable")
+
+    async def fail(_value: str, _context: Any) -> str:
+        raise original_error
+
+    workflow = Workflow(
+        (
+            TransformNode(
+                id="failing-step",
+                input_type=str,
+                output_type=str,
+                handler=fail,
+            ),
+        ),
+        input_type=str,
+    )
+
+    with pytest.raises(NodeExecutionError) as captured:
+        await workflow.execute(
+            "private input",
+            run_id="failed-progress-run",
+            progress_sink=fail_on_terminal_event,
+        )
+
+    assert captured.value.__cause__ is original_error
+    assert observed == [
+        ProgressEventType.STEP_STARTED,
+        ProgressEventType.STEP_FAILED,
     ]
 
 

@@ -33,6 +33,6 @@ def test_registry_rejects_invalid_provider_names(name: str) -> None:
         registry.register(name, CodexProvider)
 
     with pytest.raises(ProviderConfigurationError, match="string"):
-        registry.create(None)  # type: ignore[arg-type]
+        registry.create(None)  # ty: ignore[invalid-argument-type]  # Deliberately invalid input.
     with pytest.raises(ProviderConfigurationError, match="callable"):
-        registry.register("valid", None)  # type: ignore[arg-type]
+        registry.register("valid", None)  # ty: ignore[invalid-argument-type]  # Deliberately invalid input.

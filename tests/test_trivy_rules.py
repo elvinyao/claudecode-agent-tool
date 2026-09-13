@@ -66,9 +66,7 @@ def _agent_recommendation(finding_id: str, **updates) -> Recommendation:
 
 def test_parse_v2_deduplicates_and_has_stable_identity() -> None:
     raw = _raw()
-    raw["Results"][0]["Vulnerabilities"].append(
-        dict(raw["Results"][0]["Vulnerabilities"][0])
-    )
+    raw["Results"][0]["Vulnerabilities"].append(dict(raw["Results"][0]["Vulnerabilities"][0]))
     first = parse_trivy_report(raw)
     second = parse_trivy_report(raw)
     assert len(first.findings) == 1
@@ -141,9 +139,7 @@ def test_merge_falls_back_for_missing_duplicate_unknown_and_invalid() -> None:
     finding = parse_trivy_report(_raw()).findings[0]
     duplicate = _agent_recommendation(finding.finding_id)
     unknown = _agent_recommendation("f" * 64)
-    merged, warnings, partial = merge_recommendations(
-        [finding], [duplicate, duplicate, unknown]
-    )
+    merged, warnings, partial = merge_recommendations([finding], [duplicate, duplicate, unknown])
     assert partial
     assert len(merged) == 1
     assert merged[0].finding_id == finding.finding_id

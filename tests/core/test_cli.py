@@ -107,6 +107,8 @@ def test_plugins_describe_emits_public_descriptor_as_json(capsys) -> None:
             "properties": {"flag": {"type": "boolean"}},
         },
         "output_schema": {"type": "object", "required": ["result"]},
+        "artifact_content_schema": None,
+        "ownership": None,
     }
 
 
@@ -124,6 +126,14 @@ def test_plugins_describe_text_includes_all_schema_sections(capsys) -> None:
     assert "INPUT_SCHEMA\n" in output
     assert "OPTIONS_SCHEMA\n" in output
     assert "OUTPUT_SCHEMA\n" in output
+    assert "ARTIFACT_CONTENT_SCHEMA\n" in output
+    assert "OWNERSHIP\n" in output
+
+
+def test_serve_parser_accepts_optional_local_history_directory(tmp_path: Path) -> None:
+    args = cli.build_parser().parse_args(["serve", "--data-dir", str(tmp_path / "history")])
+
+    assert args.data_dir == tmp_path / "history"
 
 
 def test_plugins_describe_rejects_unknown_plugin(capsys) -> None:
@@ -141,7 +151,7 @@ def test_doctor_reports_offline_provider_and_plugin_readiness_as_json(
     capsys,
 ) -> None:
     providers = ProviderRegistry()
-    providers.register("fake", lambda **_values: object())  # type: ignore[arg-type]
+    providers.register("fake", lambda **_values: object())  # ty: ignore[invalid-argument-type]  # Minimal test double.
     monkeypatch.setattr(
         cli,
         "diagnose_provider_runtime",
@@ -195,7 +205,7 @@ def test_doctor_returns_degraded_for_explicit_unavailable_provider(
     capsys,
 ) -> None:
     providers = ProviderRegistry()
-    providers.register("fake", lambda **_values: object())  # type: ignore[arg-type]
+    providers.register("fake", lambda **_values: object())  # ty: ignore[invalid-argument-type]  # Minimal test double.
     monkeypatch.setattr(
         cli,
         "diagnose_provider_runtime",
@@ -222,7 +232,7 @@ def test_doctor_returns_degraded_for_explicit_unavailable_provider(
 
 def test_doctor_rejects_an_unknown_provider(capsys) -> None:
     providers = ProviderRegistry()
-    providers.register("fake", lambda **_values: object())  # type: ignore[arg-type]
+    providers.register("fake", lambda **_values: object())  # ty: ignore[invalid-argument-type]  # Minimal test double.
 
     code = cli.main(
         ["doctor", "--provider", "missing"],
@@ -259,7 +269,7 @@ def test_run_writes_atomically_and_returns_degraded_exit_code(
             "--timeout-seconds",
             "12.5",
         ],
-        runtime=runtime,  # type: ignore[arg-type]
+        runtime=runtime,  # ty: ignore[invalid-argument-type]  # Minimal test double.
     )
 
     assert code == cli.EXIT_DEGRADED
@@ -291,7 +301,7 @@ def test_invalid_options_or_existing_output_does_not_mutate_destination(
             "--output",
             str(destination),
         ],
-        runtime=runtime,  # type: ignore[arg-type]
+        runtime=runtime,  # ty: ignore[invalid-argument-type]  # Minimal test double.
     )
     invalid_options_code = cli.main(
         [
@@ -307,7 +317,7 @@ def test_invalid_options_or_existing_output_does_not_mutate_destination(
             "--options-json",
             "[]",
         ],
-        runtime=runtime,  # type: ignore[arg-type]
+        runtime=runtime,  # ty: ignore[invalid-argument-type]  # Minimal test double.
     )
 
     assert existing_code == cli.EXIT_INPUT_ERROR

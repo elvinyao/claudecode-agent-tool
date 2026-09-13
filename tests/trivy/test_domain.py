@@ -6,7 +6,9 @@ import json
 import pytest
 
 from agent_core.contracts import ProviderResult, RunStatus
+from agent_core.ownership import FieldOwnership, OwnershipSurface
 from agent_core.providers import (
+    ProviderAdapter,
     ProviderCapabilities,
     ProviderRegistry,
     ProviderUnavailableError,
@@ -105,9 +107,7 @@ def _provider_recommendation(advice: Recommendation) -> ProviderRecommendation:
 
 def test_batches_are_stable_and_use_domain_defaults() -> None:
     offline = plan_batches(parse_input_bytes(_report(26), TrivyRunOptions()))
-    online = plan_batches(
-        parse_input_bytes(_report(26), TrivyRunOptions(enrich_web=True))
-    )
+    online = plan_batches(parse_input_bytes(_report(26), TrivyRunOptions(enrich_web=True)))
 
     assert [item.batch_id for item in offline] == ["batch-0001", "batch-0002"]
     assert [len(item.findings) for item in offline] == [25, 1]
@@ -132,9 +132,7 @@ def test_offline_finalization_strips_agent_citations() -> None:
         recommended_version="1.1",
         version_source=VersionSource.TRIVY_FIXED_VERSION,
         research_status=ResearchStatus.ENRICHED,
-        evidence=[
-            Evidence(title="untrusted", url="https://example.com", claim_zh="claim")
-        ],
+        evidence=[Evidence(title="untrusted", url="https://example.com", claim_zh="claim")],
     )
 
     outcome = finalize_analysis(
@@ -160,9 +158,7 @@ def test_plugin_plans_domain_prompt_and_strict_wire_schema() -> None:
     assert request.tool_policy.web_access is True
     assert "Trivy" in request.system_prompt
     assert parsed.report.findings[0].finding_id in request.prompt
-    assert request.metadata["finding_ids"] == (
-        parsed.report.findings[0].finding_id,
-    )
+    assert request.metadata["finding_ids"] == (parsed.report.findings[0].finding_id,)
 
 
 def test_provider_wire_schema_requires_every_object_property() -> None:
@@ -216,6 +212,14 @@ def test_trivy_factory_registers_with_strict_schemas_and_fresh_instances() -> No
 
     assert descriptor.options_schema["additionalProperties"] is False
     assert descriptor.output_schema["title"] == "RenderedTrivyReport"
+    assert descriptor.artifact_content_schema is None
+    assert descriptor.ownership is not None
+    fields = {(field.surface, field.path): field.ownership for field in descriptor.ownership.fields}
+    assert fields[(OwnershipSurface.INPUT, "/content")] is FieldOwnership.PROGRAM_FACT
+    assert fields[(OwnershipSurface.OPTIONS, "/enrich_web")] is FieldOwnership.USER_CHOICE
+    assert not any(
+        field.surface is OwnershipSurface.ARTIFACT_CONTENT for field in descriptor.ownership.fields
+    )
     assert registry.create_for_run("trivy") is not registry.create_for_run("trivy")
 
 
@@ -296,16 +300,20 @@ def test_provider_partial_flag_propagates_without_relying_on_warning_text() -> N
 @pytest.mark.asyncio
 async def test_trivy_workflow_degrades_without_losing_the_report() -> None:
     class FailingProvider:
-        async def execute(self, request):
+        name = "codex"
+        model = "fake-codex"
+        capabilities = ProviderCapabilities()
+
+        async def execute(self, request, *, timeout_seconds=None):
             del request
             raise ProviderUnavailableError("not installed", provider="codex")
 
     class Runtime:
-        provider = FailingProvider()
+        provider: ProviderAdapter = FailingProvider()
         provider_name = "codex"
         model = None
         skill_name = None
-        attempt_timeout_seconds = 1.0
+        attempt_timeout_seconds: float | None = 1.0
         max_agent_concurrency = 1
 
     workflow = TrivyPlugin().create_workflow(Runtime())
@@ -341,7 +349,11 @@ async def test_trivy_workflow_uses_typed_provider_result_end_to_end() -> None:
     )
 
     class SuccessfulProvider:
-        async def execute(self, request):
+        name = "codex"
+        model = "fake-codex"
+        capabilities = ProviderCapabilities()
+
+        async def execute(self, request, *, timeout_seconds=None):
             return ProviderResult(
                 request_id=request.request_id,
                 provider="codex",
@@ -350,17 +362,21 @@ async def test_trivy_workflow_uses_typed_provider_result_end_to_end() -> None:
             )
 
     class Runtime:
-        provider = SuccessfulProvider()
+        provider: ProviderAdapter = SuccessfulProvider()
         provider_name = "codex"
         model = None
-        skill_name = "trivy-remediation"
-        attempt_timeout_seconds = 1.0
+        skill_name: str | None = "trivy-remediation"
+        attempt_timeout_seconds: float | None = 1.0
         max_agent_concurrency = 1
 
-    result = await TrivyPlugin().create_workflow(Runtime()).execute(
-        TrivyWorkflowInput(
-            content=raw,
-            options=TrivyRunOptions(use_bundled_skill=False),
+    result = (
+        await TrivyPlugin()
+        .create_workflow(Runtime())
+        .execute(
+            TrivyWorkflowInput(
+                content=raw,
+                options=TrivyRunOptions(use_bundled_skill=False),
+            )
         )
     )
 
@@ -392,7 +408,11 @@ async def test_trivy_workflow_rejects_cross_batch_finding_identity() -> None:
         )
 
     class CrossBatchProvider:
-        async def execute(self, request):
+        name = "codex"
+        model = "fake-codex"
+        capabilities = ProviderCapabilities()
+
+        async def execute(self, request, *, timeout_seconds=None):
             wrong_id = (
                 second_finding.finding_id
                 if request.request_id == "batch-0001"
@@ -406,17 +426,21 @@ async def test_trivy_workflow_rejects_cross_batch_finding_identity() -> None:
             )
 
     class Runtime:
-        provider = CrossBatchProvider()
+        provider: ProviderAdapter = CrossBatchProvider()
         provider_name = "codex"
         model = None
         skill_name = None
-        attempt_timeout_seconds = 1.0
+        attempt_timeout_seconds: float | None = 1.0
         max_agent_concurrency = 1
 
-    result = await TrivyPlugin().create_workflow(Runtime()).execute(
-        TrivyWorkflowInput(
-            content=raw,
-            options=TrivyRunOptions(batch_size=1, use_bundled_skill=False),
+    result = (
+        await TrivyPlugin()
+        .create_workflow(Runtime())
+        .execute(
+            TrivyWorkflowInput(
+                content=raw,
+                options=TrivyRunOptions(batch_size=1, use_bundled_skill=False),
+            )
         )
     )
 

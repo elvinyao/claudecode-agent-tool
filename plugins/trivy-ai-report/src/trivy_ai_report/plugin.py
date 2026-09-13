@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from agent_core.contracts import AgentRequest, ProviderResult, ToolPolicy
+from agent_core.ownership import (
+    FieldOwnership,
+    OwnershipContract,
+    OwnershipField,
+    OwnershipSurface,
+)
 from agent_core.providers import ProviderAdapter
 from agent_core.providers.errors import ProviderResponseError
 from agent_core.registry import PluginManifest
@@ -32,6 +38,46 @@ from trivy_ai_report.prompts import SYSTEM_PROMPT, build_analysis_prompt
 PLUGIN_ID = "trivy"
 PLUGIN_API_VERSION = "1.0"
 
+_OWNERSHIP = OwnershipContract(
+    fields=(
+        OwnershipField(
+            surface=OwnershipSurface.INPUT,
+            path="/content",
+            ownership=FieldOwnership.PROGRAM_FACT,
+            label="Trivy 扫描报告",
+            description="扫描器产生的原始事实；插件严格解析后锁定，AI 不得改写。",
+        ),
+        OwnershipField(
+            surface=OwnershipSurface.INPUT,
+            path="/filename",
+            ownership=FieldOwnership.USER_CHOICE,
+            label="报告文件名",
+            description="用户提交扫描报告时提供的安全文件名。",
+        ),
+        OwnershipField(
+            surface=OwnershipSurface.OPTIONS,
+            path="/enrich_web",
+            ownership=FieldOwnership.USER_CHOICE,
+            label="联网核验",
+            description="用户明确选择是否允许只读 Web 资料核验。",
+        ),
+        OwnershipField(
+            surface=OwnershipSurface.OPTIONS,
+            path="/batch_size",
+            ownership=FieldOwnership.USER_CHOICE,
+            label="批次大小",
+            description="用户可选的分析批次上限；省略时由程序选择安全默认值。",
+        ),
+        OwnershipField(
+            surface=OwnershipSurface.OPTIONS,
+            path="/use_bundled_skill",
+            ownership=FieldOwnership.USER_CHOICE,
+            label="内置技能",
+            description="用户明确选择是否应用插件内置的只读整改规则。",
+        ),
+    )
+)
+
 
 class PluginRuntime(Protocol):
     """Run-scoped services supplied by agent-core's composition runtime."""
@@ -47,12 +93,7 @@ class PluginRuntime(Protocol):
 def bundled_skill_path() -> Path:
     """Return the trusted Trivy Skill shipped inside the plugin wheel."""
 
-    return (
-        Path(__file__).resolve().parent
-        / "bundled_skills"
-        / "trivy-remediation"
-        / "SKILL.md"
-    )
+    return Path(__file__).resolve().parent / "bundled_skills" / "trivy-remediation" / "SKILL.md"
 
 
 def load_bundled_skill() -> SkillSpec:
@@ -112,6 +153,8 @@ class TrivyPlugin:
         input_model=TrivyWorkflowInput,
         options_model=TrivyRunOptions,
         output_model=RenderedTrivyReport,
+        artifact_content_model=None,
+        ownership=_OWNERSHIP,
         required_capabilities=("structured_output",),
     )
 
@@ -123,8 +166,8 @@ class TrivyPlugin:
             request: AgentRequest[ProviderRecommendationBatch],
             _context: WorkflowContext,
         ) -> TrivyAgentBatchOutcome:
-            result: ProviderResult[ProviderRecommendationBatch] = (
-                await runtime.provider.execute(request)
+            result: ProviderResult[ProviderRecommendationBatch] = await runtime.provider.execute(
+                request
             )
             expected = set(request.metadata["finding_ids"])
             returned = [item.finding_id for item in result.output.recommendations]

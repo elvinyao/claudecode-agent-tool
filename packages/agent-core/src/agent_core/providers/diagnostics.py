@@ -103,10 +103,7 @@ def _diagnose_cli_or_sdk(provider: str, spec: _RuntimeSpec) -> ProviderDiagnosti
             name=provider,
             status=ProviderReadiness.READY,
             runtime="cli",
-            detail=(
-                f"{executable.name} executable is available via "
-                f"{_executable_source(spec)}."
-            ),
+            detail=(f"{executable.name} executable is available via {_executable_source(spec)}."),
         )
 
     version = _installed_version(spec.distribution)
@@ -117,8 +114,7 @@ def _diagnose_cli_or_sdk(provider: str, spec: _RuntimeSpec) -> ProviderDiagnosti
             status=ProviderReadiness.UNAVAILABLE,
             runtime="none",
             detail=(
-                f"Install agent-core[{spec.install_extra}] or make {candidates} "
-                "available on PATH."
+                f"Install agent-core[{spec.install_extra}] or make {candidates} available on PATH."
             ),
         )
     return _sdk_ready(provider, spec, version)
@@ -137,9 +133,7 @@ def _diagnose_sdk_with_auxiliary_cli(
             name=provider,
             status=ProviderReadiness.UNAVAILABLE,
             runtime="none",
-            detail=(
-                f"Install agent-core[{spec.install_extra}]; the Python SDK is required."
-            ),
+            detail=(f"Install agent-core[{spec.install_extra}]; the Python SDK is required."),
         )
 
     executable_or_error = _resolve_executable(provider, spec)
@@ -182,11 +176,7 @@ def _installed_version(distribution: str) -> str | None:
 
 
 def _executable_source(spec: _RuntimeSpec) -> str:
-    return (
-        spec.environment_variable
-        if spec.environment_variable in os.environ
-        else "PATH"
-    )
+    return spec.environment_variable if spec.environment_variable in os.environ else "PATH"
 
 
 def _sdk_ready(

@@ -6,7 +6,8 @@ Codex、Claude 或 Antigravity**。程序拥有输入解析、事实、校验、
 
 仓库当前包含：
 
-- `agent-core` `0.1.x`：领域无关的工作流、Provider、Skill、插件注册、CLI、审计和 Web Job API。
+- `agent-core` `0.1.x`：领域无关的工作流、Provider、Skill、插件注册、CLI、审计、Web Job API
+  和 schema-driven 任务工作台。
 - `trivy-ai-report` `0.2.x`：第一个领域插件，把 Trivy JSON v2 转成中文漏洞整改 HTML 报告。
 - `ankify-agent` `0.1.x`：来源可追溯的 Anki Basic 卡片 Agent，包含版本化学习策略和七组
   Provider-neutral Eval fixtures。
@@ -17,6 +18,9 @@ Codex、Claude 或 Antigravity**。程序拥有输入解析、事实、校验、
 
 > 这个项目不是一个“把整个任务丢给聊天机器人”的包装器。它更接近一个有类型、有审计、
 > 有权限边界的工作流运行时。AI 输出始终是不可信候选值，必须经过程序校验后才能进入最终结果。
+
+Plugin 可以用机器可读的 Ownership contract 标记程序事实、用户选择、AI 候选、策略锁定和副作用输入。
+内置 Workbench 直接展示这些边界；它不会把自然语言聊天当成字段更改或 Action 授权。
 
 “本地优先”指工作流运行时、插件、Skill staging、输入处理和工件发布由你的机器控制，不代表
 模型推理离线。三个 Provider 通常会把受限 prompt 发送给相应服务，可能产生费用并受账号、
@@ -462,13 +466,24 @@ Web 是可选依赖。源码开发环境的 `--all-extras` 已包含它；单独
 uv run agent-core serve --host 127.0.0.1 --port 8000
 ```
 
+启动后可直接打开 `http://127.0.0.1:8000/workbench`。这是 package 内置的零构建三栏 UI：
+不需要 Node.js 或另一个前端服务。它可以选择 Plugin/Provider，依 Plugin JSON Schema 生成
+基础 options 控件，上传或粘贴输入，提交/取消任务，查看 SSE Timeline 和下载 Artifact。
+右侧 Task Contract 会显示 Plugin 声明的 Ownership 字段。
+
+工作台页面本身是公开静态入口，`/api/v1/*` 仍执行相同 bearer token policy。服务配置 token 时，
+只在页面上输入；内置 UI 只把 token 保留在当前页内存，不写入 URL 或浏览器持久存储。
+
 默认配置：
 
 - 只监听 loopback。
 - 未配置 token 时，`/api/v1/*` 在本机也不要求认证。
+- 无 token 的本机服务会校验 `Host`，只接受 loopback IP、`localhost` 或 `*.localhost`，防止
+  浏览器被 DNS rebinding 借用访问本地 API。
 - 不授权 Web enrichment。
 - `max_action_mode=disabled`，ActionNode 会被跳过。
 - HTTPS source/sink allowlist 为空，因此不能访问远程 URL。
+- run queue、历史和 Artifact 默认都是有界的单进程内存实现。
 - `/livez` 和 `/readyz` 不要求认证；它们不暴露凭据。
 
 确认服务：
@@ -515,6 +530,18 @@ curl -sS -X POST http://127.0.0.1:8000/api/v1/runs \
 POST 返回 `202` 和一个完整状态 object，其中包含 `run_id`。上面的 `Results: []` 只验证 API
 链路，不会调用 Provider。要验证认证和 structured output，请提交包含 finding 的真实或仓库示例。
 
+如果希望在入队前先检查完整 run spec，可以把同一个 JSON body 发给预检 endpoint：
+
+```bash
+curl -i -X POST http://127.0.0.1:8000/api/v1/runs/validate \
+  -H 'Content-Type: application/json' \
+  -d @run-spec.json
+```
+
+通过时返回 `204`，不创建 Run、不占用 queue，也不调用 Provider。它同步执行 Plugin/Provider、
+Web/Action、source/sink/HTTPS policy 和 Plugin options schema 检查。内置 Workbench 会在真正提交前
+自动调用它。这不是 Provider 连通性或账号额度探测；SDK、认证和模型错误仍可能在 Run 中发生。
+
 用返回的 ID 轮询：
 
 ```bash
@@ -548,6 +575,12 @@ curl -sS -X POST http://127.0.0.1:8000/api/v1/uploads \
 {"type":"upload","upload_id":"UPLOAD_ID"}
 ```
 
+不再需要临时输入时，可以显式释放；内置 Workbench 会复用同一文件的上传，并在成功入队后清理：
+
+```bash
+curl -i -X DELETE http://127.0.0.1:8000/api/v1/uploads/UPLOAD_ID
+```
+
 任务列表支持 `status`、`plugin_id`、`provider`、`parent_run_id` 和 `limit` 过滤：
 
 ```bash
@@ -561,8 +594,13 @@ curl -N http://127.0.0.1:8000/api/v1/runs/RUN_ID/events
 curl -N -H 'Last-Event-ID: 2' http://127.0.0.1:8000/api/v1/runs/RUN_ID/events
 ```
 
-事件目前覆盖 queued、started、cancel requested、artifact created 和 terminal 状态，只包含状态、
-错误码、warning 数量和 Artifact 元数据，不包含 prompt、原始输入、签名 URL 或 chain-of-thought。
+事件覆盖 queued、started、cancel requested、artifact created、terminal 状态，以及 Workflow 的
+step started/completed/cancelled/failed、agent batch started/completed、retry scheduled 和
+validation completed。
+进度字段只包含 node ID/type/status、attempt、batch/accepted count、duration 和受控 error code 等元数据；
+不包含 prompt、原始输入、签名 URL、Provider response 或 chain-of-thought。
+事件缓冲是有界的；请求的 cursor 太旧时，服务会先发送 `stream.gap`，并设置
+`X-Event-Replay-Gap: true`，客户端应明确提示历史已截断。
 
 显式重跑会创建带 `parent_run_id` 的新 run。请求 body 必须重新提供完整 run spec，并重新通过当前
 Plugin、Provider、Web、Action 和 HTTPS policy；服务不会为“一键重跑”长期保留敏感原请求：
@@ -581,6 +619,16 @@ curl -sS -X POST http://127.0.0.1:8000/api/v1/runs/PARENT_RUN_ID/rerun \
 - Web 的通用字段放在 `options`；插件字段放在 `options.parameters`。
 - Web 的 `options.enrich_web` 是经过服务器 policy 检查的专用字段。Trivy 的同名 option 会由
   composition root 注入，不能藏进 `parameters` 绕过服务端权限。
+
+`GET /api/v1/plugins/{plugin_id}/schema` 返回 input/options/output schema，可选的
+artifact-content schema，以及已经在 Plugin 注册时校验过的 Ownership contract。Ownership 值包括
+`program_fact`、`user_choice`、`ai_candidate`、`policy_locked` 和 `action_input`；它们是 UI 和
+后续 RunDraft 权限的产品契约。当前 Workbench 会禁用非 `user_choice` options，Runtime 会验证声明的
+artifact-content schema；通用 Ownership-aware JSON Patch 服务端授权仍属于下一阶段。
+
+`GET /api/v1/workbench/config` 只返回同源工作台需要的非秘密 server policy，例如 Provider 列表、
+Web/Action 上限、输入大小、`durable_history` 和 `preflight_available`。它不返回 API token 或
+HTTPS allowlist。
 
 `source` 是严格的 discriminated union，支持 inline JSON、inline text、上传引用或 HTTPS：
 
@@ -681,13 +729,36 @@ HTTPS transport 只允许 `https`、精确 allowlist、无 userinfo/fragment/red
 CLI 只暴露最常用的 Web policy 开关。要修改 queue、TTL、大小或 transport timeout，需要在 Python
 composition root 中构造 `WebSettings`/`HttpsIoPolicy` 并调用 `create_app(...)`。
 
-Web composition root 现在通过 `JobManager` 和 `UploadStore` protocol 接受替代实现；默认后端仍是
-有界的**单进程内存实现**：
+Web composition root 通过 `JobManager`、`RunStore`、`ArtifactStore` 和 `UploadStore` protocol
+接受替代实现。未指定状态目录时，默认后端仍是有界的**单进程内存实现**：
 
-- 重启进程会丢失 queue、run 状态和 artifact。
-- terminal run 默认完成一小时后过期。
-- 不要把多个 Uvicorn worker 的内存当成共享存储。
-- 当前 CLI 没有持久化 job backend 的开关；生产多实例需要在 Python 中注入 durable queue/store。
+- 重启进程会丢失 queue、run 状态和 Artifact；
+- terminal run 默认完成一小时后过期；
+- 多个 Uvicorn worker 不共享这些内存。
+
+需要跨服务重启保留**终态历史和 Artifact**时，显式指定一个受保护的本地目录：
+
+```bash
+uv run agent-core serve \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --data-dir .agent-core-state
+```
+
+该模式用 SQLite 保存受限的 Run metadata 和事件，用 filesystem 保存 Artifact，读取时校验
+SHA-256。SQLite 不保存提交的原始 payload；Artifact 文件是真实业务输出，可能包含敏感内容，
+因此必须用文件系统权限、备份和 retention policy 保护该目录。
+
+`--data-dir` 不会把当前 executor 变成 durable queue：
+
+- queue、待执行 payload 和 multipart upload 仍在内存中；
+- 已终态的 Run 和 Artifact 重启后可继续查看；
+- 正常关闭会协作式取消当前进程的未终态任务；如果进程未完成清理便中断，下一次启动会把残留的
+  `queued` / `running` 记录变成 `failed`，错误码为 `worker_interrupted`，不会从原节点续跑；
+- 仍只支持单进程；不要用多个 Uvicorn worker 指向同一目录。
+
+生产多实例还需要 durable queue、worker lease、checkpoint/resume、共享 Artifact store 和对应的
+运维保障；当前本地 backend 不声称提供这些能力。
 
 ## 用户排障
 
@@ -1561,7 +1632,8 @@ tail -n 100 "$HOME/Library/Application Support/agent_core/audit.jsonl" \
 | 413 | HTTP request body 超过上限；chunked body 也会累计计数 |
 | run 202 后 failed `input_too_large` | inline canonical bytes 或 HTTPS GET 内容在 worker 中超过输入上限 |
 | 503 capacity | queue/store 满；遵守 `Retry-After`，或在 Python settings 中调整有界容量 |
-| run 重启后 404 | 默认 backend 是内存，服务重启后状态不会恢复 |
+| run 重启后 404 | 默认 backend 是内存；需要保留终态历史时使用 `serve --data-dir PATH` |
+| run 重启后 failed `worker_interrupted` | `--data-dir` 保留了记录，但 queue/checkpoint 不持久；提交新 spec 重跑 |
 
 ## 安全模型
 
@@ -1581,6 +1653,7 @@ tail -n 100 "$HOME/Library/Application Support/agent_core/audit.jsonl" \
 - **Action**：框架只对 terminal `ActionNode` 做 action-mode admission、gating 和 audit；可信插件作者
   必须把副作用放在这里。插件本身是未被 Python 沙箱隔离的受信代码，任意 handler 技术上都能 I/O。
 - **Web I/O**：不接受本地路径或 `file://`；HTTPS exact allowlist + DNS/IP 防护 + size/timeout。
+- **本地 Web Host**：无 token 模式拒绝非 loopback `Host`，降低浏览器 DNS rebinding 风险。
 - **审计**：只持久化 metadata/hash，不保存原始 prompt、响应和 signed URL query。
 - **输出**：Jinja2 autoescape、HTML CSP；CLI 默认 no-overwrite 并原子发布。
 
@@ -1606,9 +1679,12 @@ tail -n 100 "$HOME/Library/Application Support/agent_core/audit.jsonl" \
 - CLI 会把本地输入一次性读入内存，Core 当前没有 CLI 文件大小上限；不可信大输入应由插件限制，
   或通过具有 10 MiB 默认边界的 Web transport 处理。
 - Web inline source 只接受 JSON object；不接受本地路径。
-- 内置 JobManager 只适合单进程，重启不恢复。
+- 内置 JobManager 只适合单进程；`--data-dir` 只持久历史/Artifact，不持久 queue 或 checkpoint。
+- 未经正常关闭而残留的 queued/running run 会在启动恢复时标记为 `failed` +
+  `worker_interrupted`，不会 resume。
 - `/readyz` 不进行付费/真实 Provider 探测。
-- 没有通用 `--verbose` 或持久化 job backend CLI flag。
+- 没有通用 `--verbose`、Approval/checkpoint contract、RBAC/多租户、Ownership-aware 聊天补丁，
+  或版本化 Artifact Review。
 - 框架保证边界和失败语义，不保证 AI 建议本身正确。
 
 ## 从旧原型迁移

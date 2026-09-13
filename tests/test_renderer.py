@@ -100,10 +100,11 @@ def test_render_is_self_contained_escaped_and_uses_only_safe_external_links() ->
 
     assert "&lt;script&gt;alert" in html
     assert '<script>alert("description")</script>' not in html
-    assert '<img src=x onerror=alert(1)>' not in html
-    assert '<svg onload=alert(1)>' not in html
-    assert soup.find("meta", attrs={"http-equiv": "Content-Security-Policy"}) is not None
-    csp = soup.find("meta", attrs={"http-equiv": "Content-Security-Policy"})["content"]
+    assert "<img src=x onerror=alert(1)>" not in html
+    assert "<svg onload=alert(1)>" not in html
+    csp_meta = soup.find("meta", attrs={"http-equiv": "Content-Security-Policy"})
+    assert csp_meta is not None
+    csp = csp_meta["content"]
     assert "default-src 'none'" in csp
     assert "connect-src 'none'" in csp
 
@@ -111,11 +112,14 @@ def test_render_is_self_contained_escaped_and_uses_only_safe_external_links() ->
     assert soup.select(external_resources) == []
     for anchor in soup.find_all("a", href=True):
         href = anchor["href"]
+        assert isinstance(href, str)
         if href.startswith("#"):
             continue
         assert urlparse(href).scheme == "https"
         assert anchor.get("target") == "_blank"
-        assert {"noopener", "noreferrer", "nofollow"}.issubset(set(anchor.get("rel", [])))
+        rel = anchor.get("rel")
+        assert isinstance(rel, list)
+        assert {"noopener", "noreferrer", "nofollow"}.issubset(set(rel))
     assert not soup.find("a", href="javascript:alert(1)")
     assert not soup.find("a", href="http://insecure.example/advisory")
 

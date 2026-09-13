@@ -40,9 +40,7 @@ def _metadata_value(lines: list[str], key: str) -> str:
         if line.startswith(prefix):
             matches.append((index, line[len(prefix) :].strip()))
     if len(matches) != 1:
-        raise SkillValidationError(
-            f"SKILL.md frontmatter must contain exactly one {key!r} field"
-        )
+        raise SkillValidationError(f"SKILL.md frontmatter must contain exactly one {key!r} field")
 
     index, value = matches[0]
     if value in {"|", ">", "|-", ">-", "|+", ">+"}:
@@ -66,9 +64,7 @@ def read_skill_metadata(skill_file: Path) -> tuple[str, str]:
     if not stat.S_ISREG(metadata.st_mode):
         raise SkillValidationError(f"SKILL.md must be a regular file: {skill_file}")
     if metadata.st_size > MAX_SKILL_FILE_BYTES:
-        raise SkillValidationError(
-            f"SKILL.md exceeds the {MAX_SKILL_FILE_BYTES}-byte limit"
-        )
+        raise SkillValidationError(f"SKILL.md exceeds the {MAX_SKILL_FILE_BYTES}-byte limit")
 
     try:
         text = skill_file.read_text(encoding="utf-8")
@@ -144,9 +140,7 @@ def validate_skill_tree(source_dir: Path) -> tuple[ValidatedSkillFile, ...]:
             )
             total_bytes += metadata.st_size
             if len(files) > MAX_SKILL_FILES:
-                raise SkillValidationError(
-                    f"skill contains more than {MAX_SKILL_FILES} files"
-                )
+                raise SkillValidationError(f"skill contains more than {MAX_SKILL_FILES} files")
             if total_bytes > MAX_SKILL_TOTAL_BYTES:
                 raise SkillValidationError(
                     f"skill exceeds the {MAX_SKILL_TOTAL_BYTES}-byte total limit"

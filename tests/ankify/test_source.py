@@ -24,9 +24,7 @@ def test_markdown_normalization_is_stable_and_filename_independent() -> None:
     second = normalize_source(raw, filename="renamed.markdown")
 
     assert first.document_id == second.document_id
-    assert [block.block_id for block in first.blocks] == [
-        block.block_id for block in second.blocks
-    ]
+    assert [block.block_id for block in first.blocks] == [block.block_id for block in second.blocks]
     assert [block.heading_path for block in first.blocks] == [
         ("算数",),
         ("算数", "ミス"),

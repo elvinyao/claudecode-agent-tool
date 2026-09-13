@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from importlib import metadata
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agent_core.contracts import (
     AgentCoreError,
@@ -16,6 +16,7 @@ from agent_core.contracts import (
     ArtifactOutput,
     StrictFrozenModel,
 )
+from agent_core.ownership import OwnershipContract, validate_ownership_contract
 
 CORE_API_VERSION = "1.0"
 DOMAIN_PLUGIN_ENTRYPOINT_GROUP = "agent_core.domain_plugins"
@@ -70,6 +71,8 @@ class PluginManifest(StrictFrozenModel):
     input_model: type[BaseModel]
     options_model: type[BaseModel]
     output_model: type[BaseModel]
+    artifact_content_model: type[BaseModel] | None = None
+    ownership: OwnershipContract | None = None
     required_capabilities: tuple[str, ...] = ()
 
     @field_validator("plugin_id")
@@ -112,6 +115,21 @@ class PluginManifest(StrictFrozenModel):
             raise ValueError("plugin output_model must inherit ArtifactOutput")
         return value
 
+    @model_validator(mode="after")
+    def validate_ownership(self) -> PluginManifest:
+        if self.ownership is not None:
+            validate_ownership_contract(
+                self.ownership,
+                input_schema=self.input_model.model_json_schema(),
+                options_schema=self.options_model.model_json_schema(),
+                artifact_content_schema=(
+                    self.artifact_content_model.model_json_schema()
+                    if self.artifact_content_model is not None
+                    else None
+                ),
+            )
+        return self
+
 
 class PluginDescriptor(StrictFrozenModel):
     """JSON-schema metadata safely exposed to CLI and Web transports."""
@@ -125,6 +143,8 @@ class PluginDescriptor(StrictFrozenModel):
     input_schema: dict[str, Any]
     options_schema: dict[str, Any]
     output_schema: dict[str, Any]
+    artifact_content_schema: dict[str, Any] | None = None
+    ownership: OwnershipContract | None = None
 
     @classmethod
     def from_manifest(cls, manifest: PluginManifest, *, source: str) -> PluginDescriptor:
@@ -138,6 +158,12 @@ class PluginDescriptor(StrictFrozenModel):
             input_schema=manifest.input_model.model_json_schema(),
             options_schema=manifest.options_model.model_json_schema(),
             output_schema=manifest.output_model.model_json_schema(),
+            artifact_content_schema=(
+                manifest.artifact_content_model.model_json_schema()
+                if manifest.artifact_content_model is not None
+                else None
+            ),
+            ownership=manifest.ownership,
         )
 
 
@@ -207,9 +233,7 @@ class PluginRegistry:
         """Discover factories from the standard entry-point group and fail closed."""
 
         discovered = (
-            tuple(entry_points)
-            if entry_points is not None
-            else _entry_points_for_group(group)
+            tuple(entry_points) if entry_points is not None else _entry_points_for_group(group)
         )
         descriptors: list[PluginDescriptor] = []
         for entry_point in sorted(discovered, key=lambda item: item.name):
@@ -317,9 +341,7 @@ def _plugin_manifest(plugin: Any, plugin_id: str) -> PluginManifest:
             f"plugin {plugin_id!r} must expose a PluginManifest as 'manifest'"
         )
     if not callable(getattr(plugin, "create_workflow", None)):
-        raise PluginContractError(
-            f"plugin {plugin_id!r} must expose create_workflow(runtime)"
-        )
+        raise PluginContractError(f"plugin {plugin_id!r} must expose create_workflow(runtime)")
     for attribute, expected in (
         ("plugin_id", manifest.plugin_id),
         ("api_version", manifest.api_version),
@@ -353,6 +375,7 @@ __all__ = [
     "PluginDescriptor",
     "PluginFactory",
     "PluginLoadError",
+    "PluginManifest",
     "PluginRegistry",
     "PluginRegistryError",
     "UnknownPluginError",

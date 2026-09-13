@@ -29,6 +29,7 @@ from ankify.eval.reporter import (
     write_eval_reports,
 )
 from ankify.models import AgentConfidence, AnkifyCard, ProvenanceType
+from ankify.strategies import resolve_strategy
 
 
 def _card() -> AnkifyCard:
@@ -121,7 +122,7 @@ def _report() -> EvalReport:
             EvalCaseResult(
                 fixture_id=fixture.id,
                 title=fixture.title,
-                strategy_profile=fixture.options.guide_profile,
+                strategy_profile=resolve_strategy(fixture.options).profile,
                 strategy_version=fixture.options.strategy_version or "missing",
                 runtime_status=RunStatus.SUCCEEDED,
                 cards=(_card(),),

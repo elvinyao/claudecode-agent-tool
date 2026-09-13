@@ -30,18 +30,33 @@
 
 ### 1.1 当前落地状态（2026-09-04）
 
-第一批运行控制面已经实现：
+前两批运行控制面与基础工作台已经实现：
 
 - `agent-core doctor` 离线检查 Plugin 与 Provider CLI/SDK；
 - 安全的 `RunMetadata`、任务列表与 parent/child lineage；
 - provider-neutral run-level `RunEvent`、bounded replay 和 SSE；
 - inline text 与有界 TTL multipart upload；
 - 显式 spec rerun，并重新执行全部 admission policy；
-- 可替换的 `JobManager` 与 `UploadStore` protocol。
+- 可替换的 `JobManager`、`RunStore`、`ArtifactStore` 与 `UploadStore` protocol；
+- Plugin 可以用机器可读的 Ownership contract 声明 `program_fact`、`user_choice`、
+  `ai_candidate`、`policy_locked` 和 `action_input`；
+- `/workbench` 提供无前端构建步骤的三栏工作台，依据 Plugin JSON Schema 生成基础表单，
+  并直接展示 Ownership 边界；
+- `POST /api/v1/runs/validate` 在入队前同步执行服务器 policy、source/sink 与 Plugin
+  options 预检，不调用 Provider；
+- Workflow/Runtime 将 step、batch、retry 和 validation 转换为不含 prompt、原始输入或
+  chain-of-thought 的安全实时进度事件；
+- 启动 `serve` 时显式传入 `--data-dir`，可用 SQLite 保留 metadata/events，用 filesystem
+  保留并校验 Artifact。
 
-本批默认存储仍是单进程内存实现。SQLite/filesystem、跨进程 queue、不可变 RunSpec、Approval、
-RunDraft、任务型聊天和 Web App 属于后续批次；在 durable backend 合入前，不应把当前实现描述为
-生产级持久化。
+这一 durable 模式是“单进程本地历史”，不是 durable execution：queue、未执行的 payload 和
+upload 仍在内存中。正常关闭会取消未终态任务；进程异常中断留下的 `queued` / `running` 记录会在
+下次启动收敛为 `failed` + `worker_interrupted`，不会从 checkpoint 恢复。未指定 `--data-dir` 时仍
+使用有界内存后端。
+
+尚未实现的关键产品能力包括：不可变 RunSpec/RunDraft、checkpoint/resume 与持久队列、
+Approval contract、可信用户身份与 RBAC/工作区隔离、受 Ownership 约束的聊天 JSON Patch，以及
+Artifact 版本、diff 和专用审核器。
 
 ## 2. 当前项目基础与缺口
 
@@ -60,18 +75,23 @@ RunDraft、任务型聊天和 Web App 属于后续批次；在 durable backend �
 
 ### 2.2 主要产品缺口
 
-Web 第一批已经增加任务列表、parent lineage、SSE、上传和显式重跑，但仍没有任务型 UI、对话、
-审批、checkpoint/resume 或 durable backend：
-[web.py](../packages/agent-core/src/agent_core/web.py)。
+Web 现在已有任务列表、parent lineage、SSE、上传、显式重跑，以及一个可直接使用的
+schema-driven 三栏 Workbench shell：
+[web.py](../packages/agent-core/src/agent_core/web.py)、
+[workbench.py](../packages/agent-core/src/agent_core/workbench.py)。
 
-JobManager 还是单进程内存实现，重启后运行历史和 Artifact 会消失：
-[jobs.py](../packages/agent-core/src/agent_core/jobs.py#L1)。
+它仍不是完整的企业任务工作台：暂无可信用户/工作区身份、任务型对话、Approval、
+checkpoint/resume、可恢复队列和 Artifact 版本管理。
 
-好消息是，Plugin 已经暴露 input/options/output JSON Schema，可以直接用于生成通用表单和结果
-Viewer：[web.py](../packages/agent-core/src/agent_core/web.py#L235)。
+JobManager 仍是单进程 executor/queue。可选 `--data-dir` 只把安全 Run summary/events 写入 SQLite，
+并把终态 Artifact 写入文件系统；它不会持久待执行 payload，也不会在崩溃后续跑原任务：
+[jobs.py](../packages/agent-core/src/agent_core/jobs.py)、
+[persistence.py](../packages/agent-core/src/agent_core/persistence.py)。
 
-Ankify 已经在设计文档中明确了“程序事实、AI 候选、人工意见、副作用”的所有权边界：
-[implementation-guide.md](../plugins/ankify/docs/implementation-guide.md#L25)。这套边界应该从文档约定升级为机器可读的产品契约。
+Plugin 现在同时暴露 input/options/output/artifact-content JSON Schema 和可选 Ownership contract，工作台使用
+它们生成基础表单并展示字段归属。Ankify 已将“程序事实、AI 候选、人工选择、策略锁定、
+副作用输入”从文档约定升级为机器可读契约：
+[implementation-guide.md](../plugins/ankify/docs/implementation-guide.md#L25)。
 
 ## 3. 推荐的产品形态
 
@@ -101,6 +121,11 @@ Codex、Claude 或 Antigravity。Provider 应由管理员策略或模板默认�
 
 聊天窗口是“任务控制台”，不是权威数据源。结构化 Run、Artifact、Approval 和 Audit 才是权威记录。
 
+当前 `/workbench` 已落地这个布局的可操作 shell：左侧选择 Plugin 和最近任务，中间提交/取消任务并
+查看 Timeline，右侧展示 Ownership 契约。它由 Python package 携带静态 HTML/CSS/JS，不需要 Node
+或独立前端 build。当前 shell 没有聊天补全、Approval 卡片或领域专用 Artifact 审核器，不应把它
+描述为完整 RunDraft/Review 产品。
+
 ### 3.3 字段所有权成为 UI 一级概念
 
 建议在 Plugin Manifest 中增加可选、版本化的所有权和展示元数据：
@@ -114,6 +139,10 @@ Codex、Claude 或 Antigravity。Provider 应由管理员策略或模板默认�
 | `action_input` | Action/用户 | 执行前展示预览并要求结构化审批 |
 
 聊天只能修改被契约允许的 `RunDraft` 字段，不能通过自然语言绕过固定事实和策略锁定。
+
+当前 Core 已实现版本化 Ownership contract，并在 Plugin 注册时校验 JSON Pointer 是否指向对应
+input/options/artifact-content schema。这解决了“边界能否被机器读取和 UI 展示”；但尚未实现
+RunDraft JSON Patch 权限检查，因此当前工作台不提供自然语言改字段能力。
 
 ## 4. P0：企业工作台底座
 
@@ -135,6 +164,10 @@ Codex、Claude 或 Antigravity。Provider 应由管理员策略或模板默认�
 ### 4.2 Ownership-aware RunDraft
 
 用户描述目标后，系统先生成结构化、可编辑的 `RunDraft`，而不是立即运行。
+
+已实现的底座是 Ownership contract、schema-driven 表单和同步 `runs/validate` 预检。当前点击
+“确认并运行”仍直接创建 Run，还没有单独可保存/审批的 RunDraft resource，也没有用户确认后的
+不可变 RunSpec snapshot。
 
 RunDraft 应包含：
 
@@ -187,8 +220,12 @@ run.completed
 run.failed
 ```
 
-第一批已经实现 run-level 和 `artifact.created` 事件；step、batch、candidate、validation、usage 与
-approval 事件需要在 Workflow/Provider callback contract 完成后继续接入。
+当前已实现 run-level、`artifact.created`、step started/completed/cancelled/failed、agent batch
+started/completed、`retry.scheduled` 和 `validation.completed`，并通过同一条 SSE Timeline 发布。
+事件只携带 node ID/type/status、attempt、batch/accepted count、duration 和受控 error code 等安全元数据。
+
+`ai.candidate.generated`、usage 和 approval 事件尚未实现；它们需要候选对象、计量和 Approval
+resource 先成为正式契约，不应用日志文本假装事件。
 
 UI 应显示：
 
@@ -201,8 +238,8 @@ UI 应显示：
 - Artifact ready；
 - Approval requested。
 
-增加 `GET /api/v1/runs/{run_id}/events` SSE endpoint。只有确实需要双向实时控制时才使用
-WebSocket。
+`GET /api/v1/runs/{run_id}/events` SSE endpoint 已实现有序回放和 `Last-Event-ID` 重连；cursor
+落后于有界缓冲时会显式发送 `stream.gap`。只有确实需要双向实时控制时才应增加 WebSocket。
 
 Timeline 只展示安全的计划摘要、步骤、来源、校验和结果，不展示模型原始 chain-of-thought。
 
@@ -217,6 +254,25 @@ Timeline 只展示安全的计划摘要、步骤、来源、校验和结果，�
 - `CheckpointStore`。
 
 本地版可以使用 SQLite + filesystem；团队版使用 PostgreSQL、Redis/队列和对象存储。
+
+当前已实现第一种本地组合：`RunStore` 的 SQLite backend 保留安全 snapshot/events，
+`ArtifactStore` 的 filesystem backend 以 SHA-256 校验终态工件。它必须由操作者显式启用：
+
+```bash
+uv run agent-core serve --data-dir .agent-core-state
+```
+
+不指定 `--data-dir` 时，仍使用有界内存记录和 Artifact。指定后也只是单进程历史 backend：
+
+- queue、待执行 payload 和 upload 仍在内存中；
+- 不支持多进程 worker lease 或共享 queue；
+- 重启时已经终态的历史和 Artifact 可继续读取；
+- 正常关闭会取消未终态任务；异常中断留下的 `queued` / `running` 记录会在下次启动标记为
+  `failed`，错误码是 `worker_interrupted`，不会自动重试或 resume；
+- SQLite 不保存原始请求 payload；filesystem Artifact 是真实输出内容，状态目录仍需按
+  敏感业务数据保护。
+
+因此 `QueueBackend`、`CheckpointStore`、多实例 lease 和真正的 durable execution 仍是未完成项。
 
 新增：
 
@@ -480,23 +536,23 @@ Builder 中的节点类型应直接体现框架职责：
 
 ## 9. 建议的实际开发顺序
 
-### 第一阶段：运行控制面
+### 已落地：运行控制面与基础 Workbench
 
-1. 修复 Run metadata 丢失；
-2. 抽象 durable RunStore、EventStore、ArtifactStore；
-3. 增加 RunEvent 和 SSE；
-4. 增加 Run 列表、搜索、clone/rerun；
-5. 补齐文本和文件上传；
-6. 增加 Provider Doctor。
+1. Run metadata、列表、parent lineage 和显式 rerun；
+2. `RunStore` / `ArtifactStore` 抽象与可选 SQLite/filesystem 本地历史；
+3. run/step/batch/retry/validation RunEvent、bounded replay 和 SSE；
+4. inline text/JSON、multipart upload 和 HTTPS source/sink；
+5. Provider Doctor 和 Plugin descriptor；
+6. Ownership contract、schema-driven 三栏 Workbench 和同步 preflight endpoint。
 
-### 第二阶段：任务交互和审核
+### 下一阶段：可恢复执行、任务交互和审核
 
-1. Ownership-aware RunDraft；
-2. schema-driven New Task；
-3. 三栏 Web App shell；
-4. Approval/Resume contract；
-5. Ankify 专用 Review UI；
-6. Trivy finding Review UI。
+1. 不可变 RunSpec snapshot、可保存 RunDraft 和 Ownership-aware JSON Patch；
+2. durable queue、worker lease、checkpoint/resume 和幂等重试；
+3. Approval request/decision/receipt 与可信 actor identity；
+4. 只能修改契约允许字段的任务型聊天；
+5. Artifact version/diff/comment 以及 Ankify 专用 Review UI；
+6. Trivy finding Review UI 与审批后 Action 闭环。
 
 ### 第三阶段：团队和运营
 
@@ -507,11 +563,11 @@ Builder 中的节点类型应直接体现框架职责：
 5. Draft/Test/Published 与环境 promotion；
 6. 高级 Workflow Builder。
 
-最值得先做的三个具体工程目标是：
+当前最值得继续做的三个具体工程目标是：
 
-1. **RunEvent + durable RunStore/ArtifactStore**；
-2. **Ownership-aware RunDraft + schema-driven Web App**；
-3. **Approval contract + Ankify 专用 Review UI**。
+1. **不可变 RunSpec + durable queue/checkpoint/resume**；
+2. **Approval contract + trusted actor/RBAC**；
+3. **Ownership-aware chat patch + 版本化 Artifact Review**。
 
 先完成底层任务生命周期和“固定 / AI / 副作用”可视化，UI 才会真正体现这个项目的独特价值。
 
@@ -526,3 +582,30 @@ Builder 中的节点类型应直接体现框架职责：
 - 单个被接受 Artifact 的平均成本和耗时；
 - 从线上问题进入 Eval Dataset 的比例；
 - Plugin/Prompt/Model 新版本相对 baseline 的质量变化。
+
+## 11. 本轮验证记录（2026-09-05）
+
+所有执行均通过 `.agent/run.sh` 在 Docker 的 Python 3.12 环境完成。
+
+```bash
+bash .agent/run.sh uv run --locked pytest \
+  --cov=agent_core --cov=trivy_ai_report --cov=ankify \
+  --cov-branch --cov-report=term:skip-covered
+bash .agent/run.sh uv run --locked ruff check .
+bash .agent/run.sh uv build --all-packages
+```
+
+- 全量测试：361 passed、3 skipped；跳过的是默认关闭的真实 Provider 付费调用测试。
+- Python 语句与分支合并覆盖率：85.44%，超过现有 80% 门槛。
+- 关键模块覆盖率（报告四舍五入）：Web API 93%、Ownership 90%、Jobs 85%、Persistence 85%。
+- 新增回归场景包括 SQLite 迁移/损坏/事务回滚、Artifact 完整性与路径安全、
+  启动失败资源清理、生命周期持久化失败补偿、上传清理、preflight 错误脱敏、
+  Host 校验、SSE replay gap 和结构化进度事件。
+- 全仓 Ruff lint、本次改动的 Python 文件格式检查、三个包的 sdist/wheel 构建通过。
+  全仓格式检查仍有未触及文件的既有问题，本轮未进行无关格式化。
+
+覆盖率边界：Python coverage 不衡量内嵌 JavaScript 的交互覆盖率。
+Workbench 当前验证包括静态资源/API 契约断言以及 Node.js 22 语法检查，
+尚无真实浏览器端到端测试。下一轮测试优先补充表单默认值/nullable 控件、
+上传重试、鉴权和 SSE 断线重连的浏览器交互，以及 CLI、HTTPS I/O 和 Skill
+加载/暂存模块的异常分支。当前另有一条第三方 Starlette TestClient 弃用警告。

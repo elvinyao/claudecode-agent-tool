@@ -31,8 +31,7 @@ def build_terminal_summary(report: EvalReport) -> str:
         f"Passed: {'yes' if report.passed else 'no'}",
         f"Generation: {report.generation_provider or 'not configured'} / "
         f"{report.generation_model or 'n/a'}",
-        f"Judge: {report.judge_provider or 'not configured'} / "
-        f"{report.judge_model or 'n/a'}",
+        f"Judge: {report.judge_provider or 'not configured'} / {report.judge_model or 'n/a'}",
         f"Overall average: {_score(report.overall_average)}",
         "",
     ]
@@ -62,9 +61,7 @@ def _case_markdown(result: EvalCaseResult) -> list[str]:
     if result.rule_result.issues:
         for issue in result.rule_result.issues:
             location = "" if issue.card_index is None else f" card={issue.card_index + 1}"
-            lines.append(
-                f"- {issue.severity.value} {issue.check.value}{location}: {issue.message}"
-            )
+            lines.append(f"- {issue.severity.value} {issue.check.value}{location}: {issue.message}")
     else:
         lines.append("- none")
 
@@ -117,8 +114,7 @@ def build_markdown_report(report: EvalReport) -> str:
         f"- Passed: {'yes' if report.passed else 'no'}",
         f"- Generation: {report.generation_provider or 'not configured'} / "
         f"{report.generation_model or 'n/a'}",
-        f"- Judge: {report.judge_provider or 'not configured'} / "
-        f"{report.judge_model or 'n/a'}",
+        f"- Judge: {report.judge_provider or 'not configured'} / {report.judge_model or 'n/a'}",
         f"- Self-judged: {'yes' if report.self_judged else 'no'}",
         f"- Fixture threshold: {report.fixture_score_threshold:.2f}",
         f"- Overall threshold: {report.overall_score_threshold:.2f}",

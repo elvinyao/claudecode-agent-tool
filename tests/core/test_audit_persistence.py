@@ -25,12 +25,14 @@ def test_default_audit_path_uses_injected_platform_environment_and_home(
     xdg = tmp_path / "xdg-state"
     local = tmp_path / "local-app-data"
 
-    assert default_audit_path(
-        env={"XDG_STATE_HOME": str(xdg)}, home=home, platform="linux"
-    ) == xdg / "agent_core" / "audit.jsonl"
-    assert default_audit_path(
-        env={"LOCALAPPDATA": str(local)}, home=home, platform="win32"
-    ) == local / "agent_core" / "audit.jsonl"
+    assert (
+        default_audit_path(env={"XDG_STATE_HOME": str(xdg)}, home=home, platform="linux")
+        == xdg / "agent_core" / "audit.jsonl"
+    )
+    assert (
+        default_audit_path(env={"LOCALAPPDATA": str(local)}, home=home, platform="win32")
+        == local / "agent_core" / "audit.jsonl"
+    )
     assert default_audit_path(env={}, home=home, platform="win32") == (
         home / "AppData" / "Local" / "agent_core" / "audit.jsonl"
     )
@@ -43,9 +45,12 @@ def test_default_audit_path_uses_injected_platform_environment_and_home(
 
 
 def test_default_audit_path_ignores_relative_state_environment(tmp_path: Path) -> None:
-    assert default_audit_path(
-        env={"XDG_STATE_HOME": "relative-state"}, home=tmp_path, platform="linux"
-    ) == tmp_path / ".agent_core" / "audit.jsonl"
+    assert (
+        default_audit_path(
+            env={"XDG_STATE_HOME": "relative-state"}, home=tmp_path, platform="linux"
+        )
+        == tmp_path / ".agent_core" / "audit.jsonl"
+    )
 
 
 def test_jsonl_sink_writes_valid_records_with_private_permissions(tmp_path: Path) -> None:

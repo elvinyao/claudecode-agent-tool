@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import pytest
 from pydantic import BaseModel, ConfigDict
@@ -18,6 +17,7 @@ from agent_core.providers import (
     ProviderTimeoutError,
     ProviderTransportError,
 )
+from agent_core.providers.base import OutputT
 from agent_core.providers.errors import classify_provider_exception
 
 
@@ -47,9 +47,7 @@ class SlowProvider(BaseProvider):
         self.started = asyncio.Event()
         self.cleaned_up = asyncio.Event()
 
-    async def _execute(
-        self, item: AgentRequest[DemoOutput]
-    ) -> ProviderResult[DemoOutput]:
+    async def _execute(self, request: AgentRequest[OutputT]) -> ProviderResult[OutputT]:
         self.calls += 1
         self.started.set()
         try:
@@ -122,9 +120,7 @@ def test_sdk_error_classifier_preserves_retry_metadata() -> None:
 
 
 def test_invalid_json_schema_is_a_sanitized_configuration_error() -> None:
-    failure = RuntimeError(
-        "400 invalid_json_schema: missing secret_field from a private schema"
-    )
+    failure = RuntimeError("400 invalid_json_schema: missing secret_field from a private schema")
 
     error = classify_provider_exception(failure, provider="codex")
 
@@ -151,10 +147,10 @@ def test_sdk_status_codes_map_to_typed_errors(
     retryable: bool,
 ) -> None:
     class SdkFailure(Exception):
-        pass
+        status_code: int
 
     failure = SdkFailure("sdk failed")
-    failure.status_code = status_code  # type: ignore[attr-defined]
+    failure.status_code = status_code
     error = classify_provider_exception(failure, provider="demo")
 
     assert isinstance(error, expected_type)
@@ -172,7 +168,7 @@ async def test_provider_does_not_retry_transport_failures() -> None:
             super().__init__()
             self.calls = 0
 
-        async def _execute(self, item: AgentRequest[Any]) -> ProviderResult[Any]:
+        async def _execute(self, request: AgentRequest[OutputT]) -> ProviderResult[OutputT]:
             self.calls += 1
             raise ProviderTransportError("temporary", provider=self.name)
 

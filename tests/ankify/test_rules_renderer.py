@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from agent_core.contracts import ProviderResult
 from ankify.domain import merge_batch_outcomes, plan_batches
@@ -34,7 +35,7 @@ def _parsed(*, source_mode: SourceMode = SourceMode.MATERIALS_NOTES, **options):
 
 def _candidate(parsed, **overrides):
     block = parsed.source.blocks[0]
-    values = {
+    values: dict[str, Any] = {
         "note_type": "basic",
         "front": "残りを求めるとき、全体はどう表す？",
         "back": "全体を1=5/5と表す。",
@@ -72,7 +73,8 @@ def test_exact_source_evidence_accepts_card_and_stable_note_id() -> None:
 
     assert first.rejection is None
     assert first.card is not None
-    assert first.card.note_id == second.card.note_id  # type: ignore[union-attr]
+    assert second.card is not None
+    assert first.card.note_id == second.card.note_id
     assert first.card.tags == ("ankify", "fraction")
 
 

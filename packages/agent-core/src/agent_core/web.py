@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 import secrets
@@ -11,6 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from ipaddress import ip_address
+from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol
 from urllib.parse import urlsplit
 
@@ -33,6 +35,7 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -46,6 +49,7 @@ from agent_core.jobs import (
     JobContext,
     JobExecutionResult,
     JobManager,
+    JobManagerError,
     JobQueueFullError,
     RunEvent,
     RunEventType,
@@ -54,6 +58,7 @@ from agent_core.jobs import (
     RunSnapshot,
     RunStoreFullError,
 )
+from agent_core.ownership import OwnershipContract
 from agent_core.uploads import (
     InMemoryUploadStore,
     UploadedArtifact,
@@ -63,6 +68,7 @@ from agent_core.uploads import (
     UploadStoreFullError,
     UploadTooLargeError,
 )
+from agent_core.workbench import get_workbench_asset
 
 _PLUGIN_ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 _PROVIDER_ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
@@ -210,6 +216,7 @@ class RunStatusResponse(_StrictApiModel):
     artifact_available: bool
     artifact_url: str | None
     plugin_id: str | None = None
+    plugin_version: str | None = None
     provider: str | None = None
     model: str | None = None
     input_filename: str | None = None
@@ -243,10 +250,24 @@ class PluginSchemaResponse(_StrictApiModel):
     input_schema: dict[str, Any] | None = None
     options_schema: dict[str, Any] | None = None
     output_schema: dict[str, Any] | None = None
+    artifact_content_schema: dict[str, Any] | None = None
+    ownership: OwnershipContract | None = None
 
 
 class PluginsResponse(_StrictApiModel):
     plugins: list[PluginSchemaResponse]
+
+
+class WorkbenchConfigResponse(_StrictApiModel):
+    """Non-secret server policy needed by the same-origin workbench."""
+
+    providers: list[str]
+    allow_web_enrichment: bool
+    max_action_mode: ActionMode
+    max_upload_bytes: int
+    max_input_bytes: int
+    durable_history: bool
+    preflight_available: bool
 
 
 class HealthResponse(_StrictApiModel):
@@ -268,6 +289,8 @@ class WebSettings(_StrictApiModel):
     worker_count: int = Field(default=2, ge=1, le=128)
     max_run_records: int = Field(default=256, ge=1, le=100_000)
     run_ttl_seconds: float = Field(default=3600.0, gt=0)
+    max_events_per_run: int = Field(default=256, ge=1, le=10_000)
+    data_dir: Path | None = None
     max_upload_records: int = Field(default=128, ge=1, le=100_000)
     max_upload_bytes: int = Field(default=8 * 1024 * 1024, ge=1)
     max_upload_total_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
@@ -306,7 +329,7 @@ class ResolvedRunRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class _AdmittedRunRequest:
+class AdmittedRunRequest:
     """Queued request plus an immutable snapshot of an admitted upload."""
 
     request: RunSubmitRequest
@@ -320,6 +343,7 @@ class PluginRegistry(Protocol):
 
 
 RunExecutor = Callable[[ResolvedRunRequest, JobContext], Awaitable[JobExecutionResult]]
+RunPreflight = Callable[[RunSubmitRequest], None | Awaitable[None]]
 
 
 class RequestBodyLimitMiddleware:
@@ -377,9 +401,63 @@ class _RequestTooLarge(Exception):
     pass
 
 
+class LoopbackHostMiddleware:
+    """Reject DNS-rebinding Host headers for tokenless local deployments."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        host_headers = [value for key, value in scope.get("headers", ()) if key.lower() == b"host"]
+        if len(host_headers) != 1 or not _is_allowed_loopback_host(host_headers[0]):
+            response = JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"detail": "Invalid Host header"},
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def _is_allowed_loopback_host(raw_host: bytes) -> bool:
+    try:
+        value = raw_host.decode("ascii")
+    except UnicodeDecodeError:
+        return False
+    if (
+        not value
+        or value != value.strip()
+        or value.endswith(":")
+        or "%" in value
+        or any(ord(character) <= 0x20 or ord(character) == 0x7F for character in value)
+    ):
+        return False
+    try:
+        parsed = urlsplit(f"//{value}")
+        hostname = parsed.hostname
+        # Accessing port performs range and integer validation.
+        _ = parsed.port
+    except ValueError:
+        return False
+    if (
+        hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    return _is_loopback_bind(hostname)
+
+
 def _is_loopback_bind(host: str) -> bool:
     normalized = host.strip().lower().rstrip(".")
-    if normalized == "localhost":
+    if normalized == "localhost" or normalized.endswith(".localhost"):
         return True
     try:
         return ip_address(normalized).is_loopback
@@ -437,12 +515,10 @@ def _descriptor_schema(descriptor: Any) -> PluginSchemaResponse:
         source=_optional_string(candidate("source")),
         required_capabilities=[str(item) for item in capabilities],
         input_schema=_json_schema(candidate("input_schema", "input_model", "input_type")),
-        options_schema=_json_schema(
-            candidate("options_schema", "options_model", "options_type")
-        ),
-        output_schema=_json_schema(
-            candidate("output_schema", "output_model", "output_type")
-        ),
+        options_schema=_json_schema(candidate("options_schema", "options_model", "options_type")),
+        output_schema=_json_schema(candidate("output_schema", "output_model", "output_type")),
+        artifact_content_schema=_json_schema(candidate("artifact_content_schema")),
+        ownership=candidate("ownership"),
     )
 
 
@@ -469,11 +545,10 @@ def _status_response(snapshot: RunSnapshot) -> RunStatusResponse:
         error=error,
         artifact_available=snapshot.artifact_available,
         artifact_url=(
-            f"/api/v1/runs/{snapshot.run_id}/artifact"
-            if snapshot.artifact_available
-            else None
+            f"/api/v1/runs/{snapshot.run_id}/artifact" if snapshot.artifact_available else None
         ),
         plugin_id=snapshot.metadata.plugin_id,
+        plugin_version=snapshot.metadata.plugin_version,
         provider=snapshot.metadata.provider,
         model=snapshot.metadata.model,
         input_filename=snapshot.metadata.input_filename,
@@ -543,6 +618,15 @@ def _event_payload(event: RunEvent) -> dict[str, Any]:
         "artifact_filename": event.artifact_filename,
         "artifact_media_type": event.artifact_media_type,
         "artifact_size_bytes": event.artifact_size_bytes,
+        "node_id": event.node_id,
+        "node_kind": event.node_kind,
+        "node_status": event.node_status,
+        "attempt": event.attempt,
+        "max_attempts": event.max_attempts,
+        "delay_seconds": event.delay_seconds,
+        "batch_size": event.batch_size,
+        "accepted_count": event.accepted_count,
+        "duration_ms": event.duration_ms,
     }
     payload.update({key: value for key, value in optional.items() if value is not None})
     return payload
@@ -551,6 +635,20 @@ def _event_payload(event: RunEvent) -> dict[str, Any]:
 def _sse_frame(event: RunEvent) -> str:
     data = json.dumps(_event_payload(event), ensure_ascii=False, separators=(",", ":"))
     return f"id: {event.sequence}\nevent: {event.type.value}\ndata: {data}\n\n"
+
+
+def _sse_gap_frame(run_id: str, *, after_sequence: int, first_available: int) -> str:
+    data = json.dumps(
+        {
+            "run_id": run_id,
+            "type": "stream.gap",
+            "after_sequence": after_sequence,
+            "first_available_sequence": first_available,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"event: stream.gap\ndata: {data}\n\n"
 
 
 def _event_cursor(after: int, last_event_id: str | None) -> int:
@@ -567,6 +665,7 @@ def create_app(
     registry: PluginRegistry,
     provider_names: Sequence[str],
     run_executor: RunExecutor | None = None,
+    run_preflight: RunPreflight | None = None,
     settings: WebSettings | None = None,
     io_client: HttpsIoClient | None = None,
     job_manager: JobManager | None = None,
@@ -591,9 +690,11 @@ def create_app(
 
     if job_manager is None and run_executor is None:
         raise ValueError("run_executor is required when job_manager is not supplied")
+    if job_manager is not None and effective_settings.data_dir is not None:
+        raise ValueError("data_dir cannot be combined with an injected job_manager")
 
     async def execute_submission(
-        payload: _AdmittedRunRequest,
+        payload: AdmittedRunRequest,
         context: JobContext,
     ) -> JobExecutionResult:
         context.raise_if_cancelled()
@@ -656,14 +757,33 @@ def create_app(
             )
         return result
 
-    manager = job_manager or InMemoryJobManager(
-        execute_submission,
-        queue_capacity=effective_settings.queue_capacity,
-        worker_count=effective_settings.worker_count,
-        max_records=effective_settings.max_run_records,
-        ttl_seconds=effective_settings.run_ttl_seconds,
-        max_artifact_bytes=effective_settings.https_policy.max_output_bytes,
-    )
+    if job_manager is not None:
+        manager = job_manager
+    else:
+        run_store = None
+        artifact_store = None
+        if effective_settings.data_dir is not None:
+            from agent_core.persistence import FilesystemArtifactStore, SQLiteRunStore
+
+            run_store = SQLiteRunStore(
+                effective_settings.data_dir / "runs.sqlite3",
+                max_events_per_run=effective_settings.max_events_per_run,
+            )
+            artifact_store = FilesystemArtifactStore(
+                effective_settings.data_dir / "artifacts",
+                max_artifact_bytes=effective_settings.https_policy.max_output_bytes,
+            )
+        manager = InMemoryJobManager(
+            execute_submission,
+            queue_capacity=effective_settings.queue_capacity,
+            worker_count=effective_settings.worker_count,
+            max_records=effective_settings.max_run_records,
+            ttl_seconds=effective_settings.run_ttl_seconds,
+            max_artifact_bytes=effective_settings.https_policy.max_output_bytes,
+            max_events_per_run=effective_settings.max_events_per_run,
+            run_store=run_store,
+            artifact_store=artifact_store,
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -687,6 +807,8 @@ def create_app(
         RequestBodyLimitMiddleware,
         max_body_bytes=effective_settings.max_request_bytes,
     )
+    if effective_settings.api_token is None:
+        app.add_middleware(LoopbackHostMiddleware)
     app.state.settings = effective_settings
     app.state.registry = registry
     app.state.job_manager = manager
@@ -714,6 +836,16 @@ def create_app(
             content={"detail": detail},
         )
 
+    @app.exception_handler(JobManagerError)
+    async def sanitized_job_manager_error(
+        _request: Any,
+        _exc: JobManagerError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": "Run storage is unavailable"},
+        )
+
     async def authorize(authorization: str | None = Header(default=None)) -> None:
         configured = effective_settings.api_token
         if configured is None:
@@ -732,6 +864,26 @@ def create_app(
             )
 
     api_auth = Depends(authorize)
+
+    def workbench_asset(route: str) -> Response:
+        asset = get_workbench_asset(route)
+        return Response(
+            content=asset.content,
+            media_type=asset.media_type,
+            headers=asset.headers,
+        )
+
+    @app.get("/workbench", include_in_schema=False)
+    async def workbench_index() -> Response:
+        return workbench_asset("/workbench")
+
+    @app.get("/workbench/workbench.css", include_in_schema=False)
+    async def workbench_styles() -> Response:
+        return workbench_asset("/workbench/workbench.css")
+
+    @app.get("/workbench/workbench.js", include_in_schema=False)
+    async def workbench_script() -> Response:
+        return workbench_asset("/workbench/workbench.js")
 
     async def run_metadata(
         request: RunSubmitRequest,
@@ -775,9 +927,22 @@ def create_app(
             effective_io.validate_allowed_server(source_url)
             filename = _safe_filename(urlsplit(source_url).path.rsplit("/", 1)[-1])
             media_type = "application/json"
+        descriptor = next(
+            (
+                item
+                for item in _registry_descriptors(registry)
+                if _plugin_id_of(item) == request.plugin_id
+            ),
+            None,
+        )
         return (
             RunMetadata(
                 plugin_id=request.plugin_id,
+                plugin_version=(
+                    _optional_string(_value(descriptor, "plugin_version", "version"))
+                    if descriptor is not None
+                    else None
+                ),
                 provider=request.provider,
                 model=request.options.model,
                 input_filename=filename,
@@ -789,11 +954,12 @@ def create_app(
             uploaded_artifact,
         )
 
-    async def admit_and_submit(
+    async def preflight_request(
         request: RunSubmitRequest,
         *,
         parent_run_id: str | None = None,
-    ) -> RunSnapshot:
+        require_plugin_validation: bool = False,
+    ) -> tuple[RunMetadata, AdmittedRunRequest]:
         plugin_ids = {_plugin_id_of(item) for item in _registry_descriptors(registry)}
         if request.plugin_id not in plugin_ids:
             raise HTTPException(status_code=404, detail="Plugin not found")
@@ -813,17 +979,56 @@ def create_app(
             )
             if isinstance(request.sink, HttpsPutSink):
                 effective_io.validate_allowed_server(request.sink.url.get_secret_value())
-            queued_payload: Any = request
-            if job_manager is None:
-                queued_payload = _AdmittedRunRequest(
-                    request=request,
-                    uploaded_artifact=uploaded_artifact,
+            if run_preflight is not None:
+                validation = run_preflight(request)
+                if inspect.isawaitable(validation):
+                    await validation
+            elif require_plugin_validation:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Plugin preflight validation is unavailable",
                 )
-            return await manager.submit(queued_payload, metadata=metadata)
+            return metadata, AdmittedRunRequest(
+                request=request,
+                uploaded_artifact=uploaded_artifact,
+            )
         except UploadNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Upload not found") from exc
         except HttpsIoError as exc:
             raise HTTPException(status_code=422, detail=exc.public_message) from exc
+        except ValidationError as exc:
+            detail = [
+                {
+                    "type": str(error.get("type", "value_error")),
+                    "loc": ["options", *error.get("loc", ())],
+                    # A plugin validator controls its own message and could
+                    # accidentally interpolate a rejected secret. The field
+                    # path and stable error type are enough for the client to
+                    # highlight the invalid control safely.
+                    "msg": "Invalid plugin option",
+                }
+                for error in exc.errors()
+            ]
+            raise HTTPException(status_code=422, detail=detail) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Plugin preflight validation is unavailable",
+            ) from exc
+
+    async def admit_and_submit(
+        request: RunSubmitRequest,
+        *,
+        parent_run_id: str | None = None,
+    ) -> RunSnapshot:
+        metadata, queued_payload = await preflight_request(
+            request,
+            parent_run_id=parent_run_id,
+        )
+        try:
+            return await manager.submit(queued_payload, metadata=metadata)
         except (JobQueueFullError, RunStoreFullError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -873,17 +1078,33 @@ def create_app(
         )
 
     @app.get(
+        "/api/v1/workbench/config",
+        response_model=WorkbenchConfigResponse,
+        dependencies=[api_auth],
+    )
+    async def workbench_config() -> WorkbenchConfigResponse:
+        return WorkbenchConfigResponse(
+            providers=list(normalized_providers),
+            allow_web_enrichment=effective_settings.allow_web_enrichment,
+            max_action_mode=effective_settings.max_action_mode,
+            max_upload_bytes=min(
+                effective_settings.max_upload_bytes,
+                effective_settings.https_policy.max_input_bytes,
+                effective_uploads.max_upload_bytes,
+            ),
+            max_input_bytes=effective_settings.https_policy.max_input_bytes,
+            durable_history=effective_settings.data_dir is not None,
+            preflight_available=run_preflight is not None,
+        )
+
+    @app.get(
         "/api/v1/plugins/{plugin_id}/schema",
         response_model=PluginSchemaResponse,
         dependencies=[api_auth],
     )
     async def plugin_schema(plugin_id: str) -> PluginSchemaResponse:
         descriptor = next(
-            (
-                item
-                for item in _registry_descriptors(registry)
-                if _plugin_id_of(item) == plugin_id
-            ),
+            (item for item in _registry_descriptors(registry) if _plugin_id_of(item) == plugin_id),
             None,
         )
         if descriptor is None:
@@ -922,7 +1143,9 @@ def create_app(
                 media_type=media_type,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            # An injected store may include backend details or rejected input in
+            # its exception text. Keep the transport response stable and safe.
+            raise HTTPException(status_code=422, detail="Invalid upload metadata") from exc
         except UploadTooLargeError as exc:
             raise HTTPException(status_code=413, detail="Upload exceeds the size limit") from exc
         except UploadStoreFullError as exc:
@@ -932,6 +1155,31 @@ def create_app(
                 headers={"Retry-After": "1"},
             ) from exc
         return _upload_response(snapshot)
+
+    @app.delete(
+        "/api/v1/uploads/{upload_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        dependencies=[api_auth],
+    )
+    async def delete_upload(upload_id: str) -> Response:
+        if _UPLOAD_ID.fullmatch(upload_id) is None:
+            raise HTTPException(status_code=404, detail="Upload not found")
+        try:
+            await effective_uploads.delete(upload_id)
+        except UploadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Upload not found") from exc
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.post(
+        "/api/v1/runs/validate",
+        status_code=status.HTTP_204_NO_CONTENT,
+        dependencies=[api_auth],
+    )
+    async def validate_run(request: RunSubmitRequest) -> Response:
+        """Run synchronous admission and plugin validation without queueing work."""
+
+        await preflight_request(request, require_plugin_validation=True)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post(
         "/api/v1/runs",
@@ -990,10 +1238,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Run not found") from exc
         if parent.state not in TERMINAL_STATES:
             raise HTTPException(status_code=409, detail="Only a terminal run can be rerun")
-        if (
-            parent.metadata.plugin_id is not None
-            and request.plugin_id != parent.metadata.plugin_id
-        ):
+        if parent.metadata.plugin_id is not None and request.plugin_id != parent.metadata.plugin_id:
             raise HTTPException(status_code=409, detail="Rerun plugin must match parent run")
         return _status_response(await admit_and_submit(request, parent_run_id=run_id))
 
@@ -1039,6 +1284,12 @@ def create_app(
                             yield ": keep-alive\n\n"
                             continue
                     for event in pending:
+                        if event is pending[0] and event.sequence > cursor + 1:
+                            yield _sse_gap_frame(
+                                run_id,
+                                after_sequence=cursor,
+                                first_available=event.sequence,
+                            )
                         cursor = event.sequence
                         yield _sse_frame(event)
                     if pending[-1].type in _TERMINAL_EVENT_TYPES:
@@ -1053,6 +1304,11 @@ def create_app(
             headers={
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
+                "X-Event-Replay-Gap": (
+                    "true"
+                    if initial_events and initial_events[0].sequence > cursor + 1
+                    else "false"
+                ),
             },
         )
 
@@ -1099,6 +1355,7 @@ def uvicorn_settings(settings: WebSettings) -> dict[str, Any]:
 
 
 __all__ = [
+    "AdmittedRunRequest",
     "ArtifactSink",
     "HealthResponse",
     "HttpsPutSink",
@@ -1109,6 +1366,7 @@ __all__ = [
     "PluginsResponse",
     "ResolvedRunRequest",
     "RunExecutor",
+    "RunPreflight",
     "RunOptions",
     "RunSink",
     "RunSource",
@@ -1118,6 +1376,7 @@ __all__ = [
     "UploadedSource",
     "UploadResponse",
     "WebSettings",
+    "WorkbenchConfigResponse",
     "create_app",
     "uvicorn_settings",
 ]

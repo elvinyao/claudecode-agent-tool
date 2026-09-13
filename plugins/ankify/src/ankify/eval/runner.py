@@ -20,6 +20,7 @@ from ankify.eval.models import (
     EvalRuleResult,
 )
 from ankify.models import AnkifyResultDocument
+from ankify.strategies import resolve_strategy
 
 DEFAULT_FIXTURE_SCORE_THRESHOLD = 75.0
 DEFAULT_OVERALL_SCORE_THRESHOLD = 80.0
@@ -44,7 +45,7 @@ def _empty_case(
     return EvalCaseResult(
         fixture_id=fixture.id,
         title=fixture.title,
-        strategy_profile=fixture.options.guide_profile,
+        strategy_profile=resolve_strategy(fixture.options).profile,
         strategy_version=fixture.options.strategy_version or "unversioned",
         runtime_status=None,
         cards=(),
@@ -80,9 +81,7 @@ async def run_eval_harness(
         raise ValueError("eval clock must return a timezone-aware datetime")
 
     if generation_provider is None:
-        missing_status = (
-            EvalCaseStatus.FAIL if mode is EvalMode.STRICT else EvalCaseStatus.SKIPPED
-        )
+        missing_status = EvalCaseStatus.FAIL if mode is EvalMode.STRICT else EvalCaseStatus.SKIPPED
         results = tuple(
             _empty_case(
                 fixture,
@@ -143,28 +142,16 @@ async def run_eval_harness(
             if not rule_result.passed:
                 status = EvalCaseStatus.FAIL
             elif judge_provider is None:
-                status = (
-                    EvalCaseStatus.FAIL
-                    if mode is EvalMode.STRICT
-                    else EvalCaseStatus.WARN
-                )
+                status = EvalCaseStatus.FAIL if mode is EvalMode.STRICT else EvalCaseStatus.WARN
                 error_message = "Judge provider was not configured."
             elif judge_error is not None:
-                status = (
-                    EvalCaseStatus.FAIL
-                    if mode is EvalMode.STRICT
-                    else EvalCaseStatus.WARN
-                )
+                status = EvalCaseStatus.FAIL if mode is EvalMode.STRICT else EvalCaseStatus.WARN
                 error_message = judge_error
             elif judge_result is None:
                 status = EvalCaseStatus.FAIL
                 error_message = "Judge did not return a result."
             elif judge_result.overall_score < fixture_score_threshold:
-                status = (
-                    EvalCaseStatus.FAIL
-                    if mode is EvalMode.STRICT
-                    else EvalCaseStatus.WARN
-                )
+                status = EvalCaseStatus.FAIL if mode is EvalMode.STRICT else EvalCaseStatus.WARN
             elif runtime_result.status is RunStatus.DEGRADED:
                 status = EvalCaseStatus.WARN
             else:
@@ -181,9 +168,7 @@ async def run_eval_harness(
                     rule_result=rule_result,
                     judge_result=judge_result,
                     status=status,
-                    total_score=(
-                        judge_result.overall_score if judge_result is not None else None
-                    ),
+                    total_score=(judge_result.overall_score if judge_result is not None else None),
                     error_message=error_message,
                 )
             )
@@ -199,17 +184,12 @@ async def run_eval_harness(
     results = tuple(results_list)
     scores = [result.total_score for result in results if result.total_score is not None]
     overall_average = round(sum(scores) / len(scores), 2) if scores else None
-    strict_overall_pass = (
-        mode is EvalMode.LOCAL
-        or (
-            overall_average is not None
-            and overall_average >= overall_score_threshold
-        )
+    strict_overall_pass = mode is EvalMode.LOCAL or (
+        overall_average is not None and overall_average >= overall_score_threshold
     )
     passed = (
         all(
-            result.status not in {EvalCaseStatus.FAIL, EvalCaseStatus.SKIPPED}
-            for result in results
+            result.status not in {EvalCaseStatus.FAIL, EvalCaseStatus.SKIPPED} for result in results
         )
         and strict_overall_pass
     )

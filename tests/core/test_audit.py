@@ -94,7 +94,7 @@ def test_audit_contract_is_frozen_and_forbids_extra_raw_fields() -> None:
         status=RunStatus.SUCCEEDED,
     )
     with pytest.raises(ValidationError):
-        record.status = RunStatus.FAILED  # type: ignore[misc]
+        record.status = RunStatus.FAILED  # ty: ignore[invalid-assignment]  # Verify frozen-model rejection.
 
     values = record.model_dump()
     values["raw_payload"] = "secret"

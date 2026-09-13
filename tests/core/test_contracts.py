@@ -36,14 +36,14 @@ def test_agent_request_and_provider_result_are_strict_and_frozen() -> None:
     assert result.output.value == 3
     assert request.tool_policy.allowed_tools == ("lookup",)
     with pytest.raises(ValidationError):
-        request.prompt = "changed"  # type: ignore[misc]
+        request.prompt = "changed"  # ty: ignore[invalid-assignment]  # Verify frozen-model rejection.
     with pytest.raises(ValidationError):
-        ToolPolicy(allowed_tools=["lookup"])  # type: ignore[arg-type]
+        ToolPolicy(allowed_tools=["lookup"])  # ty: ignore[invalid-argument-type]  # Deliberately invalid input.
     with pytest.raises(ValidationError):
         AgentRequest[Answer](
             prompt="x",
             response_model=Answer,
-            unknown=True,  # type: ignore[call-arg]
+            unknown=True,  # ty: ignore[unknown-argument]  # Deliberately unknown field.
         )
 
 

@@ -45,9 +45,7 @@ def _schema_children(schema: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:
 
     for keyword in _SCHEMA_SEQUENCE_KEYWORDS:
         value = schema.get(keyword)
-        if isinstance(value, Sequence) and not isinstance(
-            value, (str, bytes, bytearray)
-        ):
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
             for child in value:
                 if isinstance(child, Mapping):
                     yield child
@@ -105,23 +103,20 @@ def validate_codex_output_schema(schema: Mapping[str, Any]) -> None:
                 isinstance(name, str) for name in required
             ):
                 raise ProviderConfigurationError(
-                    "Codex structured-output object schemas must define required "
-                    "as an array",
+                    "Codex structured-output object schemas must define required as an array",
                     provider="codex",
                 )
 
             property_names = set(properties)
             if len(required) != len(property_names) or set(required) != property_names:
                 raise ProviderConfigurationError(
-                    "Codex structured-output required fields must exactly match "
-                    "object properties",
+                    "Codex structured-output required fields must exactly match object properties",
                     provider="codex",
                 )
 
             if current.get("additionalProperties") is not False:
                 raise ProviderConfigurationError(
-                    "Codex structured-output object schemas must set "
-                    "additionalProperties to false",
+                    "Codex structured-output object schemas must set additionalProperties to false",
                     provider="codex",
                 )
 

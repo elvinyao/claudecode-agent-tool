@@ -18,9 +18,7 @@ def load_eval_fixtures() -> tuple[EvalFixture, ...]:
         resource = fixture_root.joinpath(f"{fixture_id.value}.json")
         fixture = EvalFixture.model_validate_json(resource.read_text(encoding="utf-8"))
         if fixture.id is not fixture_id:
-            raise ValueError(
-                f"fixture file {fixture_id.value!r} contains id {fixture.id.value!r}"
-            )
+            raise ValueError(f"fixture file {fixture_id.value!r} contains id {fixture.id.value!r}")
         strategy = resolve_strategy(fixture.options)
         if strategy.version != fixture.options.strategy_version:
             raise ValueError(f"fixture {fixture_id.value!r} pins an invalid strategy version")
@@ -34,7 +32,7 @@ def fixture_manifest_json() -> str:
     manifest = [
         {
             "id": fixture.id.value,
-            "strategy_profile": fixture.options.guide_profile.value,
+            "strategy_profile": resolve_strategy(fixture.options).profile.value,
             "strategy_version": fixture.options.strategy_version,
             "source_name": fixture.source.name,
         }

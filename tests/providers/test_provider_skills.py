@@ -21,11 +21,7 @@ def create_skill(root: Path) -> Path:
     skill_dir = root / "demo-skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: demo-skill\n"
-        "description: Provide read-only demo guidance.\n"
-        "---\n\n"
-        "# Demo\n",
+        "---\nname: demo-skill\ndescription: Provide read-only demo guidance.\n---\n\n# Demo\n",
         encoding="utf-8",
     )
     references = skill_dir / "references"
