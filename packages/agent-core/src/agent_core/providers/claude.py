@@ -11,7 +11,12 @@ from typing import Any
 from agent_core.contracts import AgentRequest, ProviderResult
 from agent_core.providers.base import BaseProvider, OutputT
 from agent_core.providers.capabilities import ProviderCapabilities
-from agent_core.providers.errors import ProviderUnavailableError
+from agent_core.providers.errors import (
+    ProviderExecutionError,
+    ProviderResponseError,
+    ProviderUnavailableError,
+    classify_provider_exception,
+)
 from agent_core.providers.local_runtime import resolve_local_executable
 from agent_core.providers.structured import validate_structured_output
 from agent_core.skills import CLAUDE_SKILL_LAYOUT, stage_skill
@@ -61,7 +66,7 @@ class ClaudeProvider(BaseProvider):
             invocations = "\n".join(f"/{skill.name}" for skill in self.skills)
             prompt = f"{invocations}\n\n{prompt}"
 
-        structured_output: Any | None = None
+        terminal_result: Any | None = None
         with TemporaryDirectory(prefix="agent-core-claude-") as cwd:
             cwd_path = Path(cwd)
             for skill in self.skills:
@@ -96,18 +101,18 @@ class ClaudeProvider(BaseProvider):
             stream = sdk.query(prompt=prompt, options=options)
             try:
                 async for message in stream:
-                    if (
-                        isinstance(message, sdk.ResultMessage)
-                        and message.structured_output is not None
-                    ):
-                        structured_output = message.structured_output
+                    if isinstance(message, sdk.ResultMessage):
+                        terminal_result = message
             finally:
                 close = getattr(stream, "aclose", None)
                 if close is not None:
                     await asyncio.shield(close())
 
+        if terminal_result is None:
+            raise ProviderResponseError("Claude returned no terminal result", provider=self.name)
+        _raise_for_result(terminal_result)
         output = validate_structured_output(
-            structured_output,
+            terminal_result.structured_output,
             request.response_model,
             provider=self.name,
         )
@@ -117,6 +122,26 @@ class ClaudeProvider(BaseProvider):
             model=self.model,
             output=output,
         )
+
+
+class _ClaudeApiError(RuntimeError):
+    """Expose only an HTTP status to the shared error classifier."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__(f"Claude API request failed (status {status_code})")
+
+
+def _raise_for_result(result: Any) -> None:
+    status = getattr(result, "api_error_status", None)
+    if isinstance(status, int) and not isinstance(status, bool) and 400 <= status <= 599:
+        raise classify_provider_exception(_ClaudeApiError(status), provider="claude")
+    if result.subtype == "error_max_structured_output_retries":
+        raise ProviderResponseError("Claude exhausted structured-output retries", provider="claude")
+    if result.is_error or result.subtype != "success":
+        raise ProviderExecutionError("Claude query ended unsuccessfully", provider="claude")
+    if getattr(result, "terminal_reason", None) in {"aborted_streaming", "aborted_tools"}:
+        raise ProviderExecutionError("Claude query was aborted", provider="claude")
 
 
 __all__ = ["ClaudeProvider"]

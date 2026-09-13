@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,10 +15,16 @@ from agent_core.contracts import AgentRequest, ToolPolicy
 from agent_core.providers import (
     ClaudeProvider,
     CodexProvider,
+    ProviderAuthenticationError,
     ProviderCapabilityError,
+    ProviderExecutionError,
+    ProviderPermissionError,
+    ProviderRateLimitError,
     ProviderResponseError,
+    ProviderTransportError,
     ProviderUnavailableError,
 )
+from agent_core.providers.local_runtime import resolve_local_executable
 from agent_core.skills import load_skill
 
 
@@ -44,8 +51,11 @@ def no_local_provider_executables(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_override", [False, True])
 async def test_codex_forwards_generic_contract_and_enforces_read_only(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    explicit_override: bool,
 ) -> None:
     state: dict[str, Any] = {}
 
@@ -80,18 +90,24 @@ async def test_codex_forwards_generic_contract_and_enforces_read_only(
         Sandbox=SimpleNamespace(read_only="read-only"),
     )
     monkeypatch.setattr(codex_module, "import_module", lambda name: sdk)
-    monkeypatch.setattr(
-        codex_module,
-        "resolve_local_executable",
-        lambda *args: Path("/opt/local/bin/codex"),
-    )
+    executable = tmp_path / "codex"
+    executable.write_text("#!/bin/sh\nexit 99\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.delenv("AGENT_CORE_CODEX_BIN", raising=False)
+    if explicit_override:
+        monkeypatch.setenv("AGENT_CORE_CODEX_BIN", str(executable))
+    monkeypatch.setattr(codex_module, "resolve_local_executable", resolve_local_executable)
 
     result = await CodexProvider(model="codex-model").execute(request(web=True))
 
     assert result.output == DemoOutput(answer="codex")
     assert result.request_id == "adapter-test"
     assert result.model == "codex-model"
-    assert state["config"]["codex_bin"] == "/opt/local/bin/codex"
+    if explicit_override:
+        assert state["config"]["codex_bin"] == str(executable.resolve())
+    else:
+        assert "codex_bin" not in state["config"]
     assert state["config"]["config_overrides"] == ('web_search="live"',)
     assert state["thread"]["developer_instructions"].startswith("System instructions")
     assert state["thread"]["approval_mode"] == "deny-all"
@@ -208,6 +224,9 @@ async def test_claude_exposes_only_explicit_safe_tools_and_closes_stream(
             state["options"] = kwargs
 
     class FakeResult:
+        is_error = False
+        subtype = "success"
+
         def __init__(self) -> None:
             self.structured_output = {"answer": "claude"}
 
@@ -367,6 +386,8 @@ async def test_claude_stages_and_enables_only_selected_skill(
             state["options"] = kwargs
 
     class FakeResult:
+        is_error = False
+        subtype = "success"
         structured_output = {"answer": "skilled"}
 
     class FakeStream:
@@ -410,3 +431,82 @@ async def test_claude_stages_and_enables_only_selected_skill(
     assert state["options"]["setting_sources"] == ["user", "project", "local"]
     assert state["staged_exists"] is True
     assert state["staged"].exists() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("subtype", "is_error", "status", "reason", "expected_error", "retryable"),
+    [
+        ("success", True, 401, None, ProviderAuthenticationError, False),
+        ("success", True, 403, None, ProviderPermissionError, False),
+        ("success", True, 429, None, ProviderRateLimitError, True),
+        ("success", True, 408, None, ProviderTransportError, True),
+        ("success", True, 500, None, ProviderTransportError, True),
+        ("success", True, 529, None, ProviderTransportError, True),
+        ("success", True, 400, None, ProviderExecutionError, False),
+        ("success", True, None, None, ProviderExecutionError, False),
+        ("error_during_execution", True, None, None, ProviderExecutionError, False),
+        ("error_max_turns", True, None, None, ProviderExecutionError, False),
+        ("error_max_budget_usd", True, None, None, ProviderExecutionError, False),
+        ("error_max_structured_output_retries", True, None, None, ProviderResponseError, False),
+        ("success", False, None, "aborted_streaming", ProviderExecutionError, False),
+        ("success", False, None, "aborted_tools", ProviderExecutionError, False),
+    ],
+)
+async def test_claude_terminal_errors_preserve_classification_and_close_stream(
+    monkeypatch, subtype, is_error, status, reason, expected_error, retryable
+):
+    sdk = import_module("claude_agent_sdk")
+    state = {"closed": False}
+    failure = sdk.ResultMessage(
+        subtype=subtype,
+        is_error=is_error,
+        api_error_status=status,
+        terminal_reason=reason,
+        duration_ms=0,
+        duration_api_ms=0,
+        num_turns=1,
+        session_id="test-session",
+        structured_output={"answer": "must not be accepted"},
+        result="PRIVATE PROVIDER RESPONSE",
+        errors=["PRIVATE PROVIDER RESPONSE"],
+    )
+
+    async def query(**_kwargs):
+        try:
+            yield failure
+        finally:
+            state["closed"] = True
+
+    monkeypatch.setattr(sdk, "query", query)
+    with pytest.raises(expected_error) as error:
+        await ClaudeProvider().execute(request())
+    assert error.value.retryable is retryable
+    assert "PRIVATE PROVIDER RESPONSE" not in str(error.value)
+    assert "PRIVATE PROVIDER RESPONSE" not in error.value.public_message
+    assert state["closed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_result", [False, True])
+async def test_claude_requires_terminal_success_with_structured_output(monkeypatch, with_result):
+    sdk = import_module("claude_agent_sdk")
+
+    async def query(**_kwargs):
+        if with_result:
+            yield sdk.ResultMessage(
+                subtype="success",
+                is_error=False,
+                duration_ms=0,
+                duration_api_ms=0,
+                num_turns=1,
+                session_id="test-session",
+                structured_output={"answer": "ok"},
+            )
+
+    monkeypatch.setattr(sdk, "query", query)
+    if with_result:
+        assert (await ClaudeProvider().execute(request())).output.answer == "ok"
+    else:
+        with pytest.raises(ProviderResponseError, match="no terminal result"):
+            await ClaudeProvider().execute(request())

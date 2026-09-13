@@ -30,10 +30,12 @@ pip install 'agent-core[all]'
 只安装 Core 不会自动安装任何领域插件。插件通过
 `agent_core.domain_plugins` entry-point group 注册零参数 factory；当前 Plugin API 是 `1.0`。
 
-三个 adapter 默认优先使用本机已安装、已配置的 CLI：`codex`、`claude`、`agy`。Codex/Claude
-通过各自 SDK 的 local executable 配置运行；Antigravity 直接使用 `agy` headless JSON Schema，
-缺失时回退到 `google-antigravity` Python SDK。可分别用 `AGENT_CORE_CODEX_BIN`、
-`AGENT_CORE_CLAUDE_BIN`、`AGENT_CORE_ANTIGRAVITY_BIN` 指定绝对路径。显式路径无效时 fail closed。
+三个 adapter 都要求安装对应 Python SDK。Codex 默认使用 SDK 固定版本运行时，仅在设置
+`AGENT_CORE_CODEX_BIN` 时覆盖；Claude 依次使用 `AGENT_CORE_CLAUDE_BIN`、PATH 中的
+`claude` 或 SDK bundled CLI。显式路径必须是可执行文件的绝对路径，无效时 fail closed。
+Antigravity 统一通过 SDK 能力白名单和拒绝策略执行；不再启动独立 `agy` CLI。
+迁移时移除 `AGENT_CORE_ANTIGRAVITY_BIN`，配置 `GEMINI_API_KEY` 或 SDK 支持的 Vertex/ADC 认证。
+Claude 的最终错误结果会按 HTTP 状态分类；限流和临时上游错误保留可重试语义。
 
 Codex structured-output schema 会在请求前递归预检：每个 object 的 `required` 必须精确覆盖
 `properties`，并且 `additionalProperties=false`。nullable field 应保留为 required 并允许 `null`，

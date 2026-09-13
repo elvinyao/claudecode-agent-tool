@@ -34,10 +34,10 @@ async def test_live_generic_structured_provider_smoke(provider_name: str) -> Non
     if (
         provider_name == "antigravity"
         and not os.environ.get("GEMINI_API_KEY")
-        and shutil.which("agy") is None
+        and os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() != "true"
     ):
         # ty cannot resolve pytest 8's decorated skip signature.
-        reason = "neither a local agy CLI nor GEMINI_API_KEY is configured"
+        reason = "neither GEMINI_API_KEY nor Vertex AI authentication is configured"
         pytest.skip(reason)  # ty: ignore[too-many-positional-arguments]
     provider = create_provider(provider_name)
     request = AgentRequest[LiveOutput](

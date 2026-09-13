@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
-from enum import Enum
+from importlib import import_module
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -15,13 +13,14 @@ from agent_core.contracts import AgentRequest, ToolPolicy
 from agent_core.providers import (
     AntigravityProvider,
     ProviderCapabilityError,
+    ProviderConfigurationError,
     ProviderUnavailableError,
 )
+from agent_core.skills import load_skill
 
 
 class DemoOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     answer: str
 
 
@@ -35,214 +34,136 @@ def request(*, web: bool = False) -> AgentRequest[DemoOutput]:
     )
 
 
-@pytest.mark.asyncio
-async def test_local_agy_cli_is_preferred_and_uses_headless_schema(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state: dict[str, Any] = {}
-
-    class FakeProcess:
-        returncode = 0
-
-        async def communicate(self, *, input: bytes) -> tuple[bytes, bytes]:
-            state["input"] = input
-            return (
-                b'{"event":"init","init":{}}\n'
-                b'{"event":"result","result":{"status":"SUCCESS",'
-                b'"structured_output":{"answer":"local-agy"}}}\n',
-                b"",
-            )
-
-    async def create_process(*command: str, **kwargs: Any) -> FakeProcess:
-        state["command"] = command
-        state["cwd"] = Path(kwargs["cwd"])
-        state["agents"] = (state["cwd"] / "AGENTS.md").read_text(encoding="utf-8")
-        state["schema"] = json.loads(
-            (state["cwd"] / "response-schema.json").read_text(encoding="utf-8")
-        )
-        return FakeProcess()
-
-    monkeypatch.setattr(
-        antigravity_module,
-        "resolve_local_executable",
-        lambda *args: Path("/opt/local/bin/agy"),
-    )
-    monkeypatch.setattr(
-        antigravity_module,
-        "import_module",
-        lambda name: (_ for _ in ()).throw(AssertionError(name)),
-    )
-    monkeypatch.setattr(antigravity_module.asyncio, "create_subprocess_exec", create_process)
-
-    result = await AntigravityProvider(model="gemini-test").execute(request())
-
-    assert result.output == DemoOutput(answer="local-agy")
-    assert state["command"][0] == "/opt/local/bin/agy"
-    assert "--input-format" in state["command"]
-    assert "--output-format" in state["command"]
-    assert "--json-schema" in state["command"]
-    assert "--sandbox" in state["command"]
-    assert state["command"][-2:] == ("--model", "gemini-test")
-    sent = json.loads(state["input"])
-    assert sent["message"]["content"] == "Answer this Antigravity request."
-    assert "do not mutate" in state["agents"]
-    assert "Do not access the web" in state["agents"]
-    assert state["schema"]["properties"]["answer"]
-    assert state["cwd"].exists() is False
+@pytest.fixture(autouse=True)
+def no_retired_override(monkeypatch):
+    monkeypatch.delenv("AGENT_CORE_ANTIGRAVITY_BIN", raising=False)
 
 
-@pytest.mark.asyncio
-async def test_python_sdk_fallback_has_explicit_safe_capabilities(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state: dict[str, Any] = {}
+@pytest.fixture
+def sdk_agent(monkeypatch):
+    # Use real SDK configuration and policies, replacing only the remote session.
+    sdk = import_module("google.antigravity")
+    state: dict[str, Any] = {"started": asyncio.Event(), "block": False}
 
-    class FakeCapabilities:
-        def __init__(self, **kwargs: Any) -> None:
-            state["capabilities"] = kwargs
+    class Response:
+        async def structured_output(self):
+            return {"answer": "sdk"}
 
-    class FakeConfig:
-        def __init__(self, **kwargs: Any) -> None:
-            self.values = kwargs
-            state["config"] = kwargs
+    class Agent:
+        def __init__(self, config):
+            state["config"] = config
 
-    class FakeResponse:
-        async def structured_output(self) -> dict[str, str]:
-            return {"answer": "sdk-fallback"}
-
-    class FakeAgent:
-        def __init__(self, config: FakeConfig) -> None:
-            self.config = config
-
-        async def __aenter__(self) -> FakeAgent:
-            state["workspace_exists"] = Path(self.config.values["workspaces"][0]).is_dir()
+        async def __aenter__(self):
             return self
 
-        async def __aexit__(self, *args: Any) -> None:
+        async def __aexit__(self, *_args):
             state["closed"] = True
 
-        async def chat(self, prompt: str) -> FakeResponse:
+        async def chat(self, prompt):
             state["prompt"] = prompt
-            return FakeResponse()
+            state["started"].set()
+            if state["block"]:
+                await asyncio.Event().wait()
+            return Response()
 
-    class FakeBuiltinTools(str, Enum):
-        FINISH = "finish"
-        SEARCH_WEB = "search-web"
-        READ_URL_CONTENT = "read-url"
-
-    sdk = SimpleNamespace(
-        Agent=FakeAgent,
-        BuiltinTools=FakeBuiltinTools,
-        CapabilitiesConfig=FakeCapabilities,
-        LocalAgentConfig=FakeConfig,
-    )
-    policy = SimpleNamespace(
-        deny_all=lambda: "deny-all",
-        allow=lambda tool: f"allow:{tool}",
-    )
-    monkeypatch.setattr(antigravity_module, "resolve_local_executable", lambda *args: None)
-    monkeypatch.setattr(
-        antigravity_module,
-        "import_module",
-        lambda name: policy if name.endswith(".policy") else sdk,
-    )
-
-    result = await AntigravityProvider(model="gemini-sdk").execute(request(web=True))
-
-    assert result.output.answer == "sdk-fallback"
-    assert state["capabilities"] == {
-        "enable_subagents": False,
-        "enabled_tools": ["finish", "search-web", "read-url"],
-    }
-    assert state["config"]["mcp_servers"] == []
-    assert state["config"]["tools"] == []
-    assert state["config"]["subagents"] == []
-    assert state["config"]["policies"] == [
-        "deny-all",
-        "allow:finish",
-        "allow:search-web",
-        "allow:read-url",
-    ]
-    assert state["config"]["model"] == "gemini-sdk"
-    assert state["config"]["response_schema"]["properties"]["answer"]
-    assert state["workspace_exists"] is True
-    assert state["closed"] is True
-    assert Path(state["config"]["workspaces"][0]).exists() is False
+    monkeypatch.setattr(sdk, "Agent", Agent)
+    return state
 
 
 @pytest.mark.asyncio
-async def test_local_cli_cancellation_terminates_process_and_cleans_workspace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    started = asyncio.Event()
-    state: dict[str, Any] = {}
+@pytest.mark.parametrize("web", [False, True])
+async def test_sdk_enforces_tool_policy_even_with_agy_on_path(
+    web, sdk_agent, monkeypatch, tmp_path
+):
+    agy = tmp_path / "agy"
+    agy.write_text("#!/bin/sh\nexit 99\n")
+    agy.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    result = await AntigravityProvider().execute(request(web=web))
+    assert result.output.answer == "sdk"
 
-    class FakeProcess:
-        returncode: int | None = None
+    config = sdk_agent["config"]
+    assert config.capabilities.enable_subagents is False
+    assert not config.mcp_servers
+    assert not config.tools
+    assert not config.subagents
+    allowed = {tool.value for tool in config.capabilities.enabled_tools}
+    assert allowed == ({"finish", "search_web", "read_url_content"} if web else {"finish"})
 
-        async def communicate(self, *, input: bytes) -> tuple[bytes, bytes]:
-            started.set()
-            await asyncio.Event().wait()
-            raise AssertionError("unreachable")
+    policy = import_module("google.antigravity.hooks.policy")
+    hooks = import_module("google.antigravity.hooks")
+    types = import_module("google.antigravity.types")
+    guard = policy.enforce(config.policies)
+    for name in ("run_command", "write_to_file", "start_subagent", "custom_tool", "mcp_tool"):
+        decision = await guard.run(hooks.HookContext(), types.ToolCall(name=name))
+        assert decision.allow is False, name
+    for name in ("search_web", "read_url_content", "finish"):
+        decision = await guard.run(hooks.HookContext(), types.ToolCall(name=name))
+        assert decision.allow is (name == "finish" or web), name
+    assert sdk_agent["closed"]
+    assert not Path(config.workspaces[0]).exists()
 
-        def terminate(self) -> None:
-            state["terminated"] = True
-            self.returncode = -15
 
-        async def wait(self) -> int:
-            return self.returncode or 0
-
-    async def create_process(*command: str, **kwargs: Any) -> FakeProcess:
-        state["cwd"] = Path(kwargs["cwd"])
-        return FakeProcess()
-
-    monkeypatch.setattr(
-        antigravity_module,
-        "resolve_local_executable",
-        lambda *args: Path("/opt/local/bin/agy"),
+@pytest.mark.asyncio
+async def test_sdk_stages_selected_skills(sdk_agent, tmp_path):
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: test-skill\ndescription: Test guidance.\n---\nRead the prompt.\n"
     )
-    monkeypatch.setattr(antigravity_module.asyncio, "create_subprocess_exec", create_process)
+    await AntigravityProvider(skills=(load_skill(skill_dir),)).execute(request())
+    config = sdk_agent["config"]
+    assert len(config.skills_paths) == 1
+    assert config.skills_paths[0].endswith("/.agents/skills/test-skill")
+    assert sdk_agent["prompt"].startswith("/test-skill\n\n")
 
+
+@pytest.mark.asyncio
+async def test_sdk_cancellation_closes_session_and_workspace(sdk_agent):
+    sdk_agent["block"] = True
     task = asyncio.create_task(AntigravityProvider().execute(request()))
-    await started.wait()
+    await sdk_agent["started"].wait()
     task.cancel()
-
     with pytest.raises(asyncio.CancelledError):
         await task
-
-    assert state["terminated"] is True
-    assert state["cwd"].exists() is False
+    assert sdk_agent["closed"]
+    assert not Path(sdk_agent["config"].workspaces[0]).exists()
 
 
 @pytest.mark.asyncio
-async def test_missing_local_cli_and_sdk_is_reported(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(antigravity_module, "resolve_local_executable", lambda *args: None)
+async def test_missing_sdk_does_not_fall_back_to_cli(monkeypatch, tmp_path):
+    agy = tmp_path / "agy"
+    agy.write_text("#!/bin/sh\nexit 99\n")
+    agy.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
 
-    def missing(name: str) -> Any:
+    def missing(name):
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(antigravity_module, "import_module", missing)
-
     with pytest.raises(ProviderUnavailableError, match=r"agent-core\[antigravity\]"):
         await AntigravityProvider().execute(request())
 
 
 @pytest.mark.asyncio
-async def test_unsafe_tool_is_rejected_before_runtime_discovery(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    item = AgentRequest[DemoOutput](
-        prompt="test",
-        response_model=DemoOutput,
-        tool_policy=ToolPolicy(allowed_tools=("run_command",)),
-    )
-    monkeypatch.setattr(
-        antigravity_module,
-        "resolve_local_executable",
-        lambda *args: (_ for _ in ()).throw(AssertionError("runtime discovery called")),
-    )
+async def test_retired_cli_override_has_explicit_migration_error(monkeypatch):
+    monkeypatch.setenv("AGENT_CORE_ANTIGRAVITY_BIN", "/private/secret/agy")
+    with pytest.raises(ProviderConfigurationError, match="no longer supported") as error:
+        await AntigravityProvider().execute(request())
+    assert "/private/secret" not in str(error.value)
 
+
+@pytest.mark.asyncio
+async def test_unsafe_tool_is_rejected_before_sdk_import(monkeypatch):
+    def unexpected(name):
+        raise AssertionError(name)
+
+    monkeypatch.setattr(antigravity_module, "import_module", unexpected)
     with pytest.raises(ProviderCapabilityError, match="run_command"):
-        await AntigravityProvider().execute(item)
+        await AntigravityProvider().execute(
+            AgentRequest[DemoOutput](
+                prompt="test",
+                response_model=DemoOutput,
+                tool_policy=ToolPolicy(allowed_tools=("run_command",)),
+            )
+        )

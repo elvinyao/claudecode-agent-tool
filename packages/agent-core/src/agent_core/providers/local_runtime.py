@@ -80,4 +80,14 @@ def resolve_local_executable(
     return None
 
 
-__all__ = ["resolve_local_executable"]
+def require_antigravity_sdk_runtime() -> None:
+    """Reject the retired CLI override instead of bypassing SDK tool policies."""
+    if "AGENT_CORE_ANTIGRAVITY_BIN" in os.environ:
+        raise ProviderConfigurationError(
+            "AGENT_CORE_ANTIGRAVITY_BIN is no longer supported; unset it and install "
+            "agent-core[antigravity] to use SDK-enforced tool policies",
+            provider="antigravity",
+        )
+
+
+__all__ = ["require_antigravity_sdk_runtime", "resolve_local_executable"]

@@ -148,8 +148,8 @@ uv run python -c "import openai_codex; print('openai-codex SDK: OK')"
 需要理解两个不同的组件：
 
 - `PATH` 中的 `codex` CLI 适合登录、查看状态和交互使用。
-- `agent-core[codex]` 安装的是 `openai-codex` Python SDK。adapter 会优先把 `PATH` 中的本机
-  `codex` 传给 SDK；找不到时才使用 SDK bundled/pinned runtime。
+- `agent-core[codex]` 安装的是 `openai-codex` Python SDK。adapter 默认使用 SDK bundled/pinned
+  runtime；仅设置 `AGENT_CORE_CODEX_BIN` 时覆盖，不自动选择 PATH 中的版本。
 
 两者默认复用 Codex 的本地登录状态，例如 `~/.codex`。因此 `codex login status` 成功是必要的
 排查步骤，但“系统里安装过 Codex CLI”不等于当前 Python 环境已经安装 `agent-core[codex]`。
@@ -183,36 +183,29 @@ uv run python -c "import claude_agent_sdk; print('claude-agent-sdk: OK')"
 
 #### Antigravity
 
-先安装并登录 Antigravity CLI：
-
-```bash
-agy
-```
-
-adapter 优先使用 `PATH` 中的 `agy` headless mode，因此可以复用本机 keyring 登录、模型和用户
-设置；执行仍固定在隔离临时 cwd，并强制 `--sandbox` 和 JSON Schema 输出。没有本机 CLI 时，
-安装 Python SDK fallback：
+adapter 统一通过 Python SDK 执行，以能力白名单和拒绝策略落实工具权限。安装 SDK：
 
 ```bash
 pip install 'agent-core[antigravity]'
 python -c "import google.antigravity; print('google-antigravity SDK: OK')"
 ```
 
-SDK fallback 使用 `GEMINI_API_KEY` 或 SDK 官方支持的 Vertex/ADC 环境配置，并显式关闭 subagent、
-MCP、custom tools 与写工具。相关官方文档：[Antigravity CLI 安装](https://antigravity.google/docs/cli/install/)、
-[Headless mode](https://antigravity.google/docs/cli/headless/)、
-[Python SDK](https://antigravity.google/docs/sdk/overview)。
+SDK 使用 `GEMINI_API_KEY` 或官方支持的 Vertex/ADC 环境配置，并显式关闭 subagent、MCP、
+custom tools 与写工具；只允许 finish 和按请求开放的 Web 工具。独立 `agy` 登录不能替代 SDK
+认证。不再使用 CLI headless 路径，因为 `--sandbox` 不等于禁止执行命令或写入工作区。
+相关官方文档：[Python SDK](https://antigravity.google/docs/sdk/overview)、
+[SDK 策略](https://antigravity.google/docs/sdk/policies)。
 
-三个 Provider 都支持显式覆盖本机 executable；值必须是可执行文件的绝对路径：
+Codex 和 Claude 支持显式覆盖 executable；值必须是可执行文件的绝对路径：
 
 ```text
 AGENT_CORE_CODEX_BIN
 AGENT_CORE_CLAUDE_BIN
-AGENT_CORE_ANTIGRAVITY_BIN
 ```
 
-解析顺序固定为“环境变量覆盖 → `PATH` 中的官方命令 → SDK bundled runtime”。显式覆盖无效时
-会 fail closed，不会悄悄换成另一个 binary。
+Codex 的顺序是“环境变量覆盖 → SDK pinned runtime”；Claude 的顺序是“环境变量覆盖 → PATH
+中的 claude → SDK bundled runtime”。显式覆盖无效时 fail closed。
+Antigravity 迁移时必须移除 `AGENT_CORE_ANTIGRAVITY_BIN`；保留该变量会返回配置错误和迁移提示。
 
 ### 3. 运行仓库自带 Trivy 示例
 
@@ -775,12 +768,12 @@ uv run agent-core run --help
 # 3. Provider Python SDK 是否安装在同一个 uv 环境
 uv run python -c "import openai_codex; print('codex sdk ok')"
 uv run python -c "import claude_agent_sdk; print('claude sdk ok')"
-uv run python -c "import google.antigravity; print('antigravity sdk fallback ok')"
+uv run python -c "import google.antigravity; print('antigravity sdk ok')"
 
 # 4. 认证是否存在
 codex login status
 test -n "$ANTHROPIC_API_KEY" && echo 'Claude key configured'
-agy -p "Reply with ok" --output-format json
+test -n "$GEMINI_API_KEY" && echo 'Antigravity key configured (or configure Vertex/ADC)'
 
 # 5. 用仓库内有 finding 的最小输入重试
 uv run agent-core run \
@@ -804,7 +797,7 @@ Doctor 不会调用 Provider、登录账号或探测网络，也不会输出凭�
   `uv sync --locked --all-extras`。
 - `provider_unavailable`：登录通常不是第一问题，先确认相应 Python SDK extra 已安装。
 - `provider_authentication`：Codex 检查 `codex login status`；Claude 检查本机登录或
-  `ANTHROPIC_API_KEY`；Antigravity 检查 `agy` 登录或 SDK fallback 凭据。
+  `ANTHROPIC_API_KEY`；Antigravity 检查 SDK 的 Gemini API key 或 Vertex/ADC 凭据。
 - `provider_configuration`：通常是模型名、SDK 兼容性或 structured-output schema 问题。它不是账号
   密码错误；如果 Trivy 已 fallback，CLI 会返回 `3`。
 - `output already exists`：换输出名或确认后使用 `--force`；框架故意不静默覆盖。
@@ -900,7 +893,7 @@ flowchart TB
     subgraph Provider["Optional provider boundary"]
         CODEX["openai-codex SDK\nlocal or bundled codex"]
         CLAUDE["claude-agent-sdk\nlocal or bundled claude"]
-        AGY["local agy → Python SDK fallback"]
+        AGY["google-antigravity SDK\ncapabilities + deny policy"]
     end
 
     CLI --> REG
@@ -1216,8 +1209,8 @@ RUN_LIVE_AGENT_TESTS=1 \
 uv run pytest tests/providers/test_live_adapters.py -k antigravity -vv -s
 ```
 
-Claude smoke 还要求本机登录或 `ANTHROPIC_API_KEY`；Antigravity 需要已登录 `agy` 或
-`GEMINI_API_KEY`；Codex smoke 使用本机 Codex 登录状态。不要在普通 CI 或
+Claude smoke 还要求本机登录或 `ANTHROPIC_API_KEY`；Antigravity 需要 `GEMINI_API_KEY`
+或启用 Vertex AI 并配置 ADC；Codex smoke 使用本机 Codex 登录状态。不要在普通 CI 或
 外部贡献者 PR 上默认启用 live tests。
 
 ### 构建和 wheel smoke
@@ -1547,7 +1540,7 @@ Loader 限制：最多 128 个 regular files、单文件最大 512 KiB、总计�
 1. **CLI/entry point**：`uv run agent-core plugins list`。
 2. **可选依赖**：确认 Provider SDK 能在同一 uv 环境 import。
 3. **认证**：Codex `codex login status`；Claude 检查本机登录/API key；Antigravity 检查
-   `agy` headless 登录或 SDK fallback 凭据。不要打印任何 key。
+   SDK 的 Gemini API key 或 Vertex/ADC 凭据。不要打印任何 key。
 4. **最小输入**：先跑仓库自带有 finding 的示例。
 5. **退出码和 warning**：区分 complete 与 degraded。
 6. **audit**：按 run/request ID 查看错误类型、阶段、耗时和 hash。
@@ -1565,7 +1558,7 @@ Loader 限制：最多 128 个 regular files、单文件最大 512 KiB、总计�
 | `unknown plugin` | `--plugin` 不在启动时 registry | 查看 `plugins list` 和安装环境 |
 | `unknown provider` | 名称不在 ProviderRegistry | stock CLI 支持 `codex`、`claude`、`antigravity` |
 | `provider_unavailable` | 可选 SDK/runtime 未安装或 API 不兼容 | 安装对应 extra；在同一环境测试 import |
-| `provider_authentication` | 登录或 API key 缺失/失效 | 检查对应本机 CLI 登录或 SDK fallback 凭据 |
+| `provider_authentication` | 登录或 API key 缺失/失效 | 检查对应 SDK 的登录或 API/ADC 凭据 |
 | `provider_permission` | 账号、workspace、模型权限不足 | 检查账号和模型授权 |
 | `provider_configuration` | schema、模型名或 adapter 配置错误 | 先跑 schema test；核对 SDK/runtime 版本 |
 | `provider_capability` | 插件请求了 Provider/run policy 不允许的能力 | 检查 Web/Skill/tool policy |
@@ -1646,7 +1639,7 @@ tail -n 100 "$HOME/Library/Application Support/agent_core/audit.jsonl" \
 - **Codex**：ephemeral thread、临时 cwd、read-only sandbox、deny-all approval；Web 搜索默认关闭。
 - **Claude**：无 MCP server、`permission_mode=dontAsk`；只在需要时开放 `Skill`、`WebSearch`、
   `WebFetch`，不开放 Shell 或文件写工具。
-- **Antigravity**：本机 `agy` 在隔离临时 cwd 中使用 headless schema 和 `--sandbox`；SDK fallback
+- **Antigravity**：在隔离临时 cwd 中通过 SDK 能力白名单和 deny-all 策略执行；
   显式关闭 subagent/MCP/custom tools，只开放 finish 和按需 Web 工具。
 - **结构化输出**：SDK schema、Codex preflight、Pydantic、Workflow 类型和领域 guardrail 多层校验。
 - **Skill**：严格文件树校验，再复制到隔离 workspace；不能覆盖 tool policy。

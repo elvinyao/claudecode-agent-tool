@@ -9,7 +9,10 @@ from importlib import metadata
 from pathlib import Path
 
 from agent_core.providers.errors import ProviderConfigurationError
-from agent_core.providers.local_runtime import resolve_local_executable
+from agent_core.providers.local_runtime import (
+    require_antigravity_sdk_runtime,
+    resolve_local_executable,
+)
 
 
 class ProviderReadiness(str, Enum):
@@ -41,30 +44,30 @@ class _RuntimeSpec:
     environment_variable: str
     distribution: str
     install_extra: str
-    standalone_cli: bool
+    sdk_only: bool
 
 
 _RUNTIME_SPECS = {
     "antigravity": _RuntimeSpec(
-        executable_candidates=("agy",),
+        executable_candidates=(),
         environment_variable="AGENT_CORE_ANTIGRAVITY_BIN",
         distribution="google-antigravity",
         install_extra="antigravity",
-        standalone_cli=True,
+        sdk_only=True,
     ),
     "claude": _RuntimeSpec(
         executable_candidates=("claude",),
         environment_variable="AGENT_CORE_CLAUDE_BIN",
         distribution="claude-agent-sdk",
         install_extra="claude",
-        standalone_cli=False,
+        sdk_only=False,
     ),
     "codex": _RuntimeSpec(
-        executable_candidates=("codex",),
+        executable_candidates=(),
         environment_variable="AGENT_CORE_CODEX_BIN",
         distribution="openai-codex",
         install_extra="codex",
-        standalone_cli=False,
+        sdk_only=False,
     ),
 }
 
@@ -88,36 +91,17 @@ def diagnose_provider_runtime(provider: str) -> ProviderDiagnostic:
             detail="Registered custom provider; no offline runtime check is defined.",
         )
 
-    if spec.standalone_cli:
-        return _diagnose_cli_or_sdk(normalized, spec)
+    if spec.sdk_only:
+        try:
+            require_antigravity_sdk_runtime()
+        except ProviderConfigurationError as exc:
+            return ProviderDiagnostic(
+                name=normalized,
+                status=ProviderReadiness.MISCONFIGURED,
+                runtime="sdk",
+                detail=str(exc),
+            )
     return _diagnose_sdk_with_auxiliary_cli(normalized, spec)
-
-
-def _diagnose_cli_or_sdk(provider: str, spec: _RuntimeSpec) -> ProviderDiagnostic:
-    executable_or_error = _resolve_executable(provider, spec)
-    if isinstance(executable_or_error, ProviderDiagnostic):
-        return executable_or_error
-    executable = executable_or_error
-    if executable is not None:
-        return ProviderDiagnostic(
-            name=provider,
-            status=ProviderReadiness.READY,
-            runtime="cli",
-            detail=(f"{executable.name} executable is available via {_executable_source(spec)}."),
-        )
-
-    version = _installed_version(spec.distribution)
-    if version is None:
-        candidates = "/".join(spec.executable_candidates)
-        return ProviderDiagnostic(
-            name=provider,
-            status=ProviderReadiness.UNAVAILABLE,
-            runtime="none",
-            detail=(
-                f"Install agent-core[{spec.install_extra}] or make {candidates} available on PATH."
-            ),
-        )
-    return _sdk_ready(provider, spec, version)
 
 
 def _diagnose_sdk_with_auxiliary_cli(
@@ -135,6 +119,9 @@ def _diagnose_sdk_with_auxiliary_cli(
             runtime="none",
             detail=(f"Install agent-core[{spec.install_extra}]; the Python SDK is required."),
         )
+
+    if spec.sdk_only:
+        return _sdk_ready(provider, spec, version)
 
     executable_or_error = _resolve_executable(provider, spec)
     if isinstance(executable_or_error, ProviderDiagnostic):

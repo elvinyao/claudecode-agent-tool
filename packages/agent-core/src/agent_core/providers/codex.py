@@ -75,7 +75,8 @@ class CodexProvider(BaseProvider):
                 "cwd": cwd,
                 "config_overrides": (f'web_search="{web_mode}"',),
             }
-            local_codex = resolve_local_executable(self.name, ("codex",))
+            # Keep the SDK's pinned runtime unless explicitly overridden.
+            local_codex = resolve_local_executable(self.name, ())
             if local_codex is not None:
                 config_options["codex_bin"] = str(local_codex)
             config = sdk.CodexConfig(
